@@ -29,6 +29,7 @@
 #include <stout/gtest.hpp>
 #include <stout/lambda.hpp>
 #include <stout/nothing.hpp>
+#include <stout/option.hpp>
 #include <stout/try.hpp>
 
 #include <stout/os/mkdtemp.hpp>
@@ -181,6 +182,23 @@ inline void removeDockerIPv6UserNetwork()
     << "Unable to delete the Docker IPv6 network "
     << DOCKER_IPv6_NETWORK
     << " : " << err.get();
+#endif // __WINDOWS__
+}
+
+
+inline void assertDockerKillStatus(process::Future<Option<int>>& status)
+{
+#ifdef __WINDOWS__
+  // We avoid the `AWAIT_EXPECT_WEXITSTATUS_EQ` macro, because the container
+  // exit code on failure is inconsistent. We can't even do
+  // `AWAIT_EXPECT_WEXITSTATUS_NE(0, status.get())`, because the container
+  // status code can return -1, which makes the macro think that it failed
+  // to exit. So, we check if we get an exit code and then if it's
+  // not success (not 0) in 2 separate steps.
+  AWAIT_READY(status);
+  EXPECT_SOME_NE(0, status.get());
+#else
+  AWAIT_EXPECT_WEXITSTATUS_EQ(128 + SIGKILL, status);
 #endif // __WINDOWS__
 }
 
