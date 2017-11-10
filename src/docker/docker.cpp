@@ -739,8 +739,25 @@ Try<Docker::RunOptions> Docker::RunOptions::create(
   options.volumeDriver = volumeDriver;
 
   switch (dockerInfo.network()) {
-    case ContainerInfo::DockerInfo::HOST: options.network = "host"; break;
-    case ContainerInfo::DockerInfo::BRIDGE: options.network = "bridge"; break;
+    case ContainerInfo::DockerInfo::HOST: {
+#ifndef __WINDOWS__
+      options.network = "host";
+      break;
+#else
+      // On Windows, there isn't a host network type. The equivalent is
+      // "transparent," but that is an user defined network on Windows.
+      return Error("\"Host\" network mode not supported on Windows");
+#endif // __WINDOWS__
+    }
+    case ContainerInfo::DockerInfo::BRIDGE: {
+#ifndef __WINDOWS__
+      options.network = "bridge";
+#else
+      // On Windows, the "bridge" network type is called nat.
+      options.network = "nat";
+#endif // __WINDOWS__
+      break;
+    }
     case ContainerInfo::DockerInfo::NONE: options.network = "none"; break;
     case ContainerInfo::DockerInfo::USER: {
       if (containerInfo.network_infos_size() == 0) {
