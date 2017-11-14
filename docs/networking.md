@@ -115,6 +115,12 @@ the network mode in `DockerInfo` the framework also needs to specify
 the `name` field in the `NetworkInfo` protobuf corresponding to the
 name of the user-defined docker network.
 
+On Windows, docker defines a `nat` network type that is similar to
+`BRIDGE` on Linux, so the `BRIDGE` mode will be interpreted as `nat`
+on a Windows agent. There is no `HOST` network type on Windows. To get
+the equivalent `HOST` functionality, create a `transparent` network
+through `docker network create -d transprent <NAME>` and then pass
+a `USER` network in the `DockerInfo` protobuf with the correct name.
 
 #### <a name="limitations-docker"></a>Limitations of Docker containerizer
 
