@@ -14,6 +14,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <iostream>
+
 #include <gmock/gmock.h>
 
 #include <gtest/gtest.h>
@@ -48,6 +50,10 @@
 #include "tests/flags.hpp"
 #include "tests/mesos.hpp"
 #include "tests/mock_docker.hpp"
+
+#ifdef __WINDOWS__
+#include <winnt.h>
+#endif // __WINDOWS__
 
 using namespace mesos::internal::slave::paths;
 using namespace mesos::internal::slave::state;
@@ -97,6 +103,20 @@ namespace mesos {
 namespace internal {
 namespace tests {
 
+#ifdef __WINDOWS__
+  // The unit tests should be run on a 1709 host, since earlier hosts cause the
+  // test suite to run very slowly with docker enabled. The 1709 docker image
+  // is pulled because the latest image doesn't work for process isolation
+  // (default for Windows Server)for a 1709 host . Also, nanoserver has a lot of
+  // issues with volume mounts, so we pull the servercore image instead.
+  static constexpr char DOCKER_IMAGE[]="microsoft/windowsservercore:1709";
+  static constexpr char DOCKER_INKY_IMAGE[]="windows-inky";
+  static constexpr char  DOCKER_CMD[]="ping 127.0.0.1 -n 1000";
+#else
+  static constexpr char DOCKER_IMAGE[]="alpine";
+  static constexpr char DOCKER_CMD[]="sleep 1000";
+  static constexpr char DOCKER_INKY_IMAGE[]="mesosphere/inky";
+#endif // __WINDOWS__
 
 class DockerContainerizerTest : public MesosTest
 {
@@ -160,6 +180,15 @@ public:
     return false;
   }
 
+  void setDefaultImageAndNetwork(ContainerInfo::DockerInfo& dockerInfo)
+  {
+    dockerInfo.set_image(DOCKER_IMAGE);
+#ifdef __WINDOWS__
+    // Default network setting is host, which doesn't work on Windows.
+    dockerInfo.set_network(ContainerInfo::DockerInfo::BRIDGE);
+#endif // __WINDOWS__
+  }
+
   virtual void TearDown()
   {
     Try<Owned<Docker>> docker = Docker::create(
@@ -179,6 +208,77 @@ public:
       AWAIT_READY_FOR(docker.get()->rm(container.id, true), Seconds(30));
     }
   }
+
+#ifdef __WINDOWS__
+  static void SetUpTestCase()
+  {
+    Try<string> directory = os::mkdtemp();
+    ASSERT_SOME(directory);
+
+    const string dockerFile = path::join(directory.get(), "Dockerfile");
+    ASSERT_SOME(os::write(
+        dockerFile,
+        "FROM microsoft/windowsservercore:1709\r\n"
+        "CMD [ \"inky\" ]\r\n"
+        "ENTRYPOINT echo"));
+
+    Try<string> dockerCommand = strings::format(
+        "docker build -q -t %s %s",
+        DOCKER_INKY_IMAGE,
+        directory.get());
+
+    Try<Subprocess> s = subprocess(
+        dockerCommand.get(),
+        Subprocess::PATH(os::DEV_NULL),
+        Subprocess::PATH(os::DEV_NULL),
+        Subprocess::PIPE());
+
+    ASSERT_SOME(s) << "Unable to create " << DOCKER_INKY_IMAGE;
+
+    Future<string> err = io::read(s->err().get());
+
+    // Wait for the image to be created
+    AWAIT_READY(s->status());
+    AWAIT_READY(err);
+
+    ASSERT_SOME(s->status().get());
+    ASSERT_EQ(s->status().get().get(), 0)
+      << "Unable to create "
+      << DOCKER_INKY_IMAGE
+      << " : " << err.get();
+
+    ASSERT_SOME(os::rmdir(directory.get()));
+  }
+
+  static void TearDownTestCase()
+  {
+    Try<string> dockerCommand = strings::format(
+        "docker rmi -f %s",
+        DOCKER_INKY_IMAGE);
+
+    Try<Subprocess> s = subprocess(
+        dockerCommand.get(),
+        Subprocess::PATH(os::DEV_NULL),
+        Subprocess::PATH(os::DEV_NULL),
+        Subprocess::PIPE());
+
+    ASSERT_SOME(s) << "Unable to rmi "
+                   << DOCKER_INKY_IMAGE;
+
+    Future<string> err = io::read(s->err().get());
+
+    // Wait for image to be deleted.
+    AWAIT_READY(s->status());
+    AWAIT_READY(err);
+
+    ASSERT_SOME(s->status().get());
+    ASSERT_EQ(s->status().get().get(), 0)
+      << "Unable to rm "
+      << DOCKER_INKY_IMAGE
+      << " : " << err.get();
+  }
+#endif // __WINDOWS__
+
 };
 
 
@@ -490,14 +590,14 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Launch)
   task.mutable_resources()->CopyFrom(offer.resources());
 
   CommandInfo command;
-  command.set_value("sleep 1000");
+  command.set_value(DOCKER_CMD);
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  setDefaultImageAndNetwork(dockerInfo);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -644,14 +744,14 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Kill)
   task.mutable_resources()->CopyFrom(offer.resources());
 
   CommandInfo command;
-  command.set_value("sleep 1000");
+  command.set_value(DOCKER_CMD);
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  setDefaultImageAndNetwork(dockerInfo);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -776,14 +876,14 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_TaskKillingCapability)
   task.mutable_resources()->CopyFrom(offer.resources());
 
   CommandInfo command;
-  command.set_value("sleep 1000");
+  command.set_value(DOCKER_CMD);
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  setDefaultImageAndNetwork(dockerInfo);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -902,14 +1002,19 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Usage)
 
   CommandInfo command;
   // Run a CPU intensive command, so we can measure utime and stime later.
+#ifdef __WINDOWS__
+  command.set_shell(true);
+  command.set_value("for /L %x in (1,0,2) do rem");
+#else
   command.set_value("dd if=/dev/zero of=/dev/null");
+#endif // __WINDOWS__
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  setDefaultImageAndNetwork(dockerInfo);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -967,9 +1072,13 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Usage)
   EXPECT_EQ(2.0 + slave::DEFAULT_EXECUTOR_CPUS, statistics.cpus_limit());
   EXPECT_EQ((Gigabytes(1) + slave::DEFAULT_EXECUTOR_MEM).bytes(),
             statistics.mem_limit_bytes());
+#ifndef __WINDOWS__
+  // TODO(akagup): User+system can be retrieved through the HCS or
+  // docker REST API. RSS isn't provided by the HCS.
   EXPECT_LT(0, statistics.cpus_user_time_secs());
   EXPECT_LT(0, statistics.cpus_system_time_secs());
   EXPECT_GT(statistics.mem_rss_bytes(), 0u);
+#endif // __WINDOWS__
 
   Future<Option<ContainerTermination>> termination =
     dockerContainerizer.wait(containerId.get());
@@ -1204,11 +1313,11 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Recover)
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  setDefaultImageAndNetwork(dockerInfo);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   CommandInfo commandInfo;
-  commandInfo.set_value("sleep 1000");
+  commandInfo.set_value(DOCKER_CMD);
 
   Try<Docker::RunOptions> runOptions = Docker::RunOptions::create(
       containerInfo,
@@ -1287,7 +1396,12 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Recover)
   EXPECT_NONE(termination2.get());
 
   // Expect the orphan to be stopped!
+#ifdef __WINDOWS__
+  AWAIT_READY(orphanRun);
+  EXPECT_SOME(orphanRun.get());
+#else
   AWAIT_EXPECT_WEXITSTATUS_EQ(128 + SIGKILL, orphanRun);
+#endif // __WINDOWS__
 }
 
 
@@ -1340,12 +1454,12 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_KillOrphanContainers)
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
 
+  setDefaultImageAndNetwork(dockerInfo);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   CommandInfo commandInfo;
-  commandInfo.set_value("sleep 1000");
+  commandInfo.set_value(DOCKER_CMD);
 
   Try<Docker::RunOptions> runOptions = Docker::RunOptions::create(
       containerInfo,
@@ -1424,7 +1538,12 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_KillOrphanContainers)
   EXPECT_NONE(termination2.get());
   ASSERT_FALSE(exists(docker, orphanContainerId));
 
+#ifdef __WINDOWS__
+  AWAIT_READY(orphanRun);
+  EXPECT_SOME(orphanRun.get());
+#else
   AWAIT_EXPECT_WEXITSTATUS_EQ(128 + SIGKILL, orphanRun);
+#endif // __WINDOWS__
 }
 
 
@@ -1530,11 +1649,11 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_SkipRecoverMalformedUUID)
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  setDefaultImageAndNetwork(dockerInfo);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   CommandInfo commandInfo;
-  commandInfo.set_value("sleep 1000");
+  commandInfo.set_value(DOCKER_CMD);
 
   Try<Docker::RunOptions> runOptions = Docker::RunOptions::create(
       containerInfo,
@@ -2143,23 +2262,33 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Logs)
 
   string uuid = UUID::random().toString();
 
+  CommandInfo command;
+#ifndef __WINDOWS__
   // NOTE: We prefix `echo` with `unbuffer` so that we can immediately
   // flush the output of `echo`.  This mitigates a race in Docker where
   // it mangles reads from stdout/stderr and commits suicide.
   // See MESOS-4676 for more information.
-  CommandInfo command;
   command.set_value(
       "unbuffer echo out" + uuid + " ; "
       "unbuffer echo err" + uuid + " 1>&2");
-
+#else
+  command.set_shell(true);
+  command.set_value(
+      "echo out" + uuid + " & "
+      "echo err" + uuid + " 1>&2");
+#endif // __WINDOWS__
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   // TODO(tnachen): Use local image to test if possible.
+  ContainerInfo::DockerInfo dockerInfo;
+#ifndef __WINDOWS__
   // NOTE: This is an image that is exactly
   // `docker run -t -i alpine /bin/sh -c "apk add --update expect"`.
-  ContainerInfo::DockerInfo dockerInfo;
   dockerInfo.set_image("mesosphere/alpine-expect");
+#else 
+  setDefaultImageAndNetwork(dockerInfo);
+#endif // __WINDOWS__
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -2199,7 +2328,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Logs)
     os::read(path::join(containerConfig->directory(), "stderr"));
 
   ASSERT_SOME(read);
-
+  std::cout << "value from read " << read.get() << std::endl;
   vector<string> lines = strings::split(read.get(), "\n");
 
   EXPECT_TRUE(containsLine(lines, "err" + uuid));
@@ -2207,7 +2336,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Logs)
 
   read = os::read(path::join(containerConfig->directory(), "stdout"));
   ASSERT_SOME(read);
-
+  std::cout << "value from read " << read.get() << std::endl;
   lines = strings::split(read.get(), "\n");
 
   EXPECT_TRUE(containsLine(lines, "out" + uuid));
@@ -2297,7 +2426,10 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Default_CMD)
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("mesosphere/inky");
+  dockerInfo.set_image(DOCKER_INKY_IMAGE);
+#ifdef __WINDOWS__
+  dockerInfo.set_network(ContainerInfo::DockerInfo::BRIDGE);
+#endif // __WINDOWS__
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -2436,7 +2568,10 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Default_CMD_Override)
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("mesosphere/inky");
+  dockerInfo.set_image(DOCKER_INKY_IMAGE);
+#ifdef __WINDOWS__
+  dockerInfo.set_network(ContainerInfo::DockerInfo::BRIDGE);
+#endif // __WINDOWS__
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -2579,7 +2714,10 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Default_CMD_Args)
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("mesosphere/inky");
+  dockerInfo.set_image(DOCKER_INKY_IMAGE);
+#ifdef __WINDOWS__
+  dockerInfo.set_network(ContainerInfo::DockerInfo::BRIDGE);
+#endif // __WINDOWS__
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -2709,14 +2847,14 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_SlaveRecoveryTaskContainer)
   task.mutable_resources()->CopyFrom(offer.resources());
 
   CommandInfo command;
-  command.set_value("sleep 1000");
+  command.set_value(DOCKER_CMD);
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  setDefaultImageAndNetwork(dockerInfo);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -3041,18 +3179,25 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_NC_PortMapping)
   task.mutable_resources()->CopyFrom(offer.resources());
 
   CommandInfo command;
+#ifndef __WINDOWS__
   command.set_shell(false);
   command.set_value("nc");
   command.add_arguments("-l");
   command.add_arguments("-p");
   command.add_arguments("1000");
+#else
+  // Set shell to false because we want powershell, not cmd.
+  command.set_shell(false);
+  command.set_value("powershell");
+  command.add_arguments("$l=[System.Net.Sockets.TcpListener]1000;l.Start()")
+#endif // __WINDOWS__
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  dockerInfo.set_image(DOCKER_IMAGE);
   dockerInfo.set_network(ContainerInfo::DockerInfo::BRIDGE);
 
   ContainerInfo::DockerInfo::PortMapping portMapping;
@@ -3099,8 +3244,14 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_NC_PortMapping)
   string uuid = UUID::random().toString();
 
   // Write uuid to docker mapped host port.
+#ifndef __WINDOWS__
   Try<process::Subprocess> s = process::subprocess(
       "echo " + uuid + " | nc localhost 10000");
+#else
+  Try<process::Subprocess> s = process::subprocess(
+    "echo " + uuid + " | nc lcaol"
+  )
+#endif // __WINDOWS__
 
   ASSERT_SOME(s);
   AWAIT_READY_FOR(s->status(), Seconds(60));
@@ -3131,10 +3282,12 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_NC_PortMapping)
 }
 
 
+#ifndef __WINDOWS__
 // This test verifies that sandbox with ':' in the path can still
 // run successfully. This a limitation of the Docker CLI where
 // the volume map parameter treats colons (:) as separators,
-// and incorrectly separates the sandbox directory.
+// and incorrectly separates the sandbox directory. On Windows, colons
+// aren't a legal path character, so this test is skipped.
 TEST_F(DockerContainerizerTest, ROOT_DOCKER_LaunchSandboxWithColon)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
@@ -3195,14 +3348,14 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_LaunchSandboxWithColon)
   task.mutable_resources()->CopyFrom(offer.resources());
 
   CommandInfo command;
-  command.set_value("sleep 1000");
+  command.set_value(DOCKER_CMD);
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  dockerInfo.set_image(DOCKER_IMAGE);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -3240,6 +3393,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_LaunchSandboxWithColon)
   AWAIT_READY(termination);
   EXPECT_SOME(termination.get());
 }
+#endif // __WINDOWS__
 
 
 TEST_F(DockerContainerizerTest, ROOT_DOCKER_DestroyWhileFetching)
@@ -3316,14 +3470,14 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DestroyWhileFetching)
   task.mutable_resources()->CopyFrom(offer.resources());
 
   CommandInfo command;
-  command.set_value("sleep 1000");
+  command.set_value(DOCKER_CMD);
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  setDefaultImageAndNetwork(dockerInfo);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -3436,14 +3590,14 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DestroyWhilePulling)
   task.mutable_resources()->CopyFrom(offer.resources());
 
   CommandInfo command;
-  command.set_value("sleep 1000");
+  command.set_value(DOCKER_CMD);
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  dockerInfo.set_image(DOCKER_IMAGE);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -3581,7 +3735,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_ExecutorCleanupWhenLaunchFailed)
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  setDefaultImageAndNetwork(dockerInfo);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -3689,7 +3843,8 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_FetchFailure)
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  dockerInfo.set_image(DOCKER_IMAGE);
+  dockerInfo.set_network(ContainerInfo::DockerInfo::BRIDGE);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -3800,7 +3955,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DockerPullFailure)
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  setDefaultImageAndNetwork(dockerInfo);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -4061,7 +4216,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_NoTransitionFromKillingToRunning)
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
-  containerInfo.mutable_docker()->set_image("alpine");
+  containerInfo.mutable_docker()->set_image(DOCKER_IMAGE);
   containerInfo.mutable_docker()->set_network(
       ContainerInfo::DockerInfo::HOST);
 
@@ -4340,7 +4495,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_CGROUPS_CFS_CgroupsEnableCFS)
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  dockerInfo.set_image(DOCKER_IMAGE);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -4403,6 +4558,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_CGROUPS_CFS_CgroupsEnableCFS)
 #endif // __linux__
 
 
+#ifndef __WINDOWS__
 // Run a task as non root while inheriting this ownership from the
 // framework supplied default user. Tests if the sandbox "stdout"
 // is correctly owned and writeable by the tasks user.
@@ -4553,6 +4709,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Non_Root_Sandbox)
 
   EXPECT_TRUE(strings::contains(stdout.get(), "foo"));
 }
+#endif // __WINDOWS__
 
 
 // This test verifies the DNS configuration of the Docker container
@@ -4635,14 +4792,14 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DefaultDNS)
   task.mutable_resources()->CopyFrom(offer.resources());
 
   CommandInfo command;
-  command.set_value("sleep 1000");
+  command.set_value(DOCKER_CMD);
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  dockerInfo.set_image(DOCKER_IMAGE);
   dockerInfo.set_network(ContainerInfo::DockerInfo::BRIDGE);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
@@ -4818,7 +4975,7 @@ TEST_F(DockerContainerizerIPv6Test, ROOT_DOCKER_LaunchIPv6HostNetwork)
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  dockerInfo.set_image(DOCKER_IMAGE);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_container()->CopyFrom(containerInfo);
@@ -5061,7 +5218,7 @@ TEST_F(
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  dockerInfo.set_image(DOCKER_IMAGE);
   dockerInfo.set_network(ContainerInfo::DockerInfo::USER);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
