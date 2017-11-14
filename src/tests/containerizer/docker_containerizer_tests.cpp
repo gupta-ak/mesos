@@ -14,6 +14,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <iostream>
+
 #include <gmock/gmock.h>
 
 #include <gtest/gtest.h>
@@ -27,6 +29,7 @@
 #include <process/subprocess.hpp>
 
 #include <stout/duration.hpp>
+#include <stout/os.hpp>
 #include <stout/uuid.hpp>
 
 #ifdef __linux__
@@ -97,6 +100,11 @@ namespace mesos {
 namespace internal {
 namespace tests {
 
+#ifdef __WINDOWS__
+  static constexpr char DOCKER_INKY_IMAGE[]="akagup/inky";
+#else
+  static constexpr char DOCKER_INKY_IMAGE[]="mesosphere/inky";
+#endif // __WINDOWS__
 
 class DockerContainerizerTest : public MesosTest
 {
@@ -178,6 +186,21 @@ public:
     foreach (const Docker::Container& container, containers.get()) {
       AWAIT_READY_FOR(docker.get()->rm(container.id, true), Seconds(30));
     }
+  }
+
+  static void SetUpTestCase()
+  {
+    Future<Nothing> testImage = pullDockerImage(DOCKER_TEST_IMAGE);
+    Future<Nothing> inkyImage = pullDockerImage(DOCKER_INKY_IMAGE);
+
+    LOG(WARNING) << "Downloading " << string(DOCKER_TEST_IMAGE) << " and "
+                 << string(DOCKER_INKY_IMAGE) << ". This may take a while...";
+
+    // We wait 10 minutes for the pull, since the Windows `DOCKER_TEST_IMAGE`
+    // is ~200mb. `DOCKER_INKY_IMAGE` shares a common base layer with
+    // `DOCKER_TEST_IMAGE`, so it shouldn't take too much extra time.
+    AWAIT_READY_FOR(testImage, Minutes(10));
+    AWAIT_READY_FOR(inkyImage, Minutes(10));
   }
 };
 
@@ -490,14 +513,14 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Launch)
   task.mutable_resources()->CopyFrom(offer.resources());
 
   CommandInfo command;
-  command.set_value("sleep 1000");
+  command.set_value(DOCKER_SLEEP_CMD(1000));
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  dockerInfo.set_image(DOCKER_TEST_IMAGE);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -644,14 +667,14 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Kill)
   task.mutable_resources()->CopyFrom(offer.resources());
 
   CommandInfo command;
-  command.set_value("sleep 1000");
+  command.set_value(DOCKER_SLEEP_CMD(1000));
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  dockerInfo.set_image(DOCKER_TEST_IMAGE);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -776,14 +799,14 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_TaskKillingCapability)
   task.mutable_resources()->CopyFrom(offer.resources());
 
   CommandInfo command;
-  command.set_value("sleep 1000");
+  command.set_value(DOCKER_SLEEP_CMD(1000));
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  dockerInfo.set_image(DOCKER_TEST_IMAGE);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -902,14 +925,21 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Usage)
 
   CommandInfo command;
   // Run a CPU intensive command, so we can measure utime and stime later.
+#ifdef __WINDOWS__
+  command.set_shell(false);
+  command.add_arguments("pwsh");
+  command.add_arguments("-Command");
+  command.add_arguments("while($true) {}");
+#else
   command.set_value("dd if=/dev/zero of=/dev/null");
+#endif // __WINDOWS__
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  dockerInfo.set_image(DOCKER_TEST_IMAGE);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -967,9 +997,12 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Usage)
   EXPECT_EQ(2.0 + slave::DEFAULT_EXECUTOR_CPUS, statistics.cpus_limit());
   EXPECT_EQ((Gigabytes(1) + slave::DEFAULT_EXECUTOR_MEM).bytes(),
             statistics.mem_limit_bytes());
+#ifndef __WINDOWS__
+  // These aren't provided by the Windows Container APIs, so skip them.
   EXPECT_LT(0, statistics.cpus_user_time_secs());
   EXPECT_LT(0, statistics.cpus_system_time_secs());
   EXPECT_GT(statistics.mem_rss_bytes(), 0u);
+#endif // __WINDOWS__
 
   Future<Option<ContainerTermination>> termination =
     dockerContainerizer.wait(containerId.get());
@@ -990,6 +1023,13 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Usage)
 }
 
 
+// TODO(akagup): Although the Windows container APIs have functions for updating
+// container resources, `docker update` is unsupported on Windows. So, it's
+// probably not woth porting this test, since users shouldn't expect update to
+// work. If we port UCR to Windows, we could take that `update` implementation,
+// use it for the docker containerizer and then enable this test. For now,
+// #ifdef out the test, because it calls `cgroup::` functions, which won't
+// compile on Windows.
 #ifdef __linux__
 TEST_F(DockerContainerizerTest, ROOT_DOCKER_Update)
 {
@@ -1204,11 +1244,11 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Recover)
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  dockerInfo.set_image(DOCKER_TEST_IMAGE);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   CommandInfo commandInfo;
-  commandInfo.set_value("sleep 1000");
+  commandInfo.set_value(DOCKER_SLEEP_CMD(1000));
 
   Try<Docker::RunOptions> runOptions = Docker::RunOptions::create(
       containerInfo,
@@ -1287,7 +1327,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Recover)
   EXPECT_NONE(termination2.get());
 
   // Expect the orphan to be stopped!
-  AWAIT_EXPECT_WEXITSTATUS_EQ(128 + SIGKILL, orphanRun);
+  assertDockerKillStatus(orphanRun);
 }
 
 
@@ -1340,12 +1380,12 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_KillOrphanContainers)
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
 
+  dockerInfo.set_image(DOCKER_TEST_IMAGE);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   CommandInfo commandInfo;
-  commandInfo.set_value("sleep 1000");
+  commandInfo.set_value(DOCKER_SLEEP_CMD(1000));
 
   Try<Docker::RunOptions> runOptions = Docker::RunOptions::create(
       containerInfo,
@@ -1424,7 +1464,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_KillOrphanContainers)
   EXPECT_NONE(termination2.get());
   ASSERT_FALSE(exists(docker, orphanContainerId));
 
-  AWAIT_EXPECT_WEXITSTATUS_EQ(128 + SIGKILL, orphanRun);
+  assertDockerKillStatus(orphanRun);
 }
 
 
@@ -1530,11 +1570,11 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_SkipRecoverMalformedUUID)
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  dockerInfo.set_image(DOCKER_TEST_IMAGE);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   CommandInfo commandInfo;
-  commandInfo.set_value("sleep 1000");
+  commandInfo.set_value(DOCKER_SLEEP_CMD(1000));
 
   Try<Docker::RunOptions> runOptions = Docker::RunOptions::create(
       containerInfo,
@@ -1573,6 +1613,8 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_SkipRecoverMalformedUUID)
 }
 
 
+// TOOD(akagup): Persistent volumes aren't implemented on Windows, but these
+// tests should be enabled once we implement them. See MESOS-5461.
 #ifdef __linux__
 // This test verifies that we can launch a docker container with
 // persistent volume.
@@ -2143,23 +2185,37 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Logs)
 
   string uuid = id::UUID::random().toString();
 
+  CommandInfo command;
+#ifdef __WINDOWS__
+  // We avoid spaces in `echo` since `echo` in `cmd.exe` treats spaces
+  // in the argument as literal spaces so `echo X<SPACE>` outputs X<SPACE>.
+  // We don't use powershell here since `Write-Error` is verbose and causes
+  // the script to return a failure.
+  command.set_value(
+      "echo out" + uuid + "&"
+      "(echo err" + uuid + ")1>&2");
+#else
   // NOTE: We prefix `echo` with `unbuffer` so that we can immediately
   // flush the output of `echo`.  This mitigates a race in Docker where
   // it mangles reads from stdout/stderr and commits suicide.
   // See MESOS-4676 for more information.
-  CommandInfo command;
   command.set_value(
       "unbuffer echo out" + uuid + " ; "
       "unbuffer echo err" + uuid + " 1>&2");
+#endif // __WINDOWS__
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   // TODO(tnachen): Use local image to test if possible.
+  ContainerInfo::DockerInfo dockerInfo;
+#ifdef __WINDOWS__
+  dockerInfo.set_image(DOCKER_TEST_IMAGE);
+#else
   // NOTE: This is an image that is exactly
   // `docker run -t -i alpine /bin/sh -c "apk add --update expect"`.
-  ContainerInfo::DockerInfo dockerInfo;
   dockerInfo.set_image("mesosphere/alpine-expect");
+#endif // __WINDOWS__
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -2297,7 +2353,8 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Default_CMD)
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("mesosphere/inky");
+  dockerInfo.set_image(DOCKER_INKY_IMAGE);
+
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -2436,7 +2493,8 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Default_CMD_Override)
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("mesosphere/inky");
+  dockerInfo.set_image(DOCKER_INKY_IMAGE);
+
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -2579,7 +2637,8 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Default_CMD_Args)
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("mesosphere/inky");
+  dockerInfo.set_image(DOCKER_INKY_IMAGE);
+
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -2709,14 +2768,14 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_SlaveRecoveryTaskContainer)
   task.mutable_resources()->CopyFrom(offer.resources());
 
   CommandInfo command;
-  command.set_value("sleep 1000");
+  command.set_value(DOCKER_SLEEP_CMD(1000));
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  dockerInfo.set_image(DOCKER_TEST_IMAGE);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -2791,9 +2850,13 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_SlaveRecoveryTaskContainer)
 }
 
 
+#ifndef __WINDOWS__
 // The slave is stopped before the first update for a task is received
 // from the executor. When it comes back up we make sure the executor
 // re-registers and the slave properly sends the update.
+//
+// The test is removed on Windows, because the `mesosphere/test-executor`
+// image doesn't work on Windows.
 //
 // TODO(benh): This test is currently disabled because the executor
 // inside the image mesosphere/test-executor does not properly set the
@@ -2968,13 +3031,20 @@ TEST_F(DockerContainerizerTest,
   driver.stop();
   driver.join();
 }
+#endif // __WINDOWS__
 
 
 // This test verifies that port mapping with bridge network is
 // exposing the host port to the container port, by sending data
 // to the host port and receiving it in the container by listening
 // to the mapped container port.
-TEST_F(DockerContainerizerTest, ROOT_DOCKER_NC_PortMapping)
+//
+// TODO(akagup): This test requres netcat on the Windows host before
+// it can be ported. We could provide a build of netcat or just replace
+// it with powershell for this test.
+TEST_F_TEMP_DISABLED_ON_WINDOWS(
+    DockerContainerizerTest,
+    ROOT_DOCKER_NC_PortMapping)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -3131,10 +3201,13 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_NC_PortMapping)
 }
 
 
+#ifndef __WINDOWS__
 // This test verifies that sandbox with ':' in the path can still
 // run successfully. This a limitation of the Docker CLI where
 // the volume map parameter treats colons (:) as separators,
 // and incorrectly separates the sandbox directory.
+//
+// On Windows, colons aren't a legal path character, so this test is skipped.
 TEST_F(DockerContainerizerTest, ROOT_DOCKER_LaunchSandboxWithColon)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
@@ -3240,6 +3313,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_LaunchSandboxWithColon)
   AWAIT_READY(termination);
   EXPECT_SOME(termination.get());
 }
+#endif // __WINDOWS__
 
 
 TEST_F(DockerContainerizerTest, ROOT_DOCKER_DestroyWhileFetching)
@@ -3316,14 +3390,14 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DestroyWhileFetching)
   task.mutable_resources()->CopyFrom(offer.resources());
 
   CommandInfo command;
-  command.set_value("sleep 1000");
+  command.set_value(DOCKER_SLEEP_CMD(1000));
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  dockerInfo.set_image(DOCKER_TEST_IMAGE);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -3436,14 +3510,14 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DestroyWhilePulling)
   task.mutable_resources()->CopyFrom(offer.resources());
 
   CommandInfo command;
-  command.set_value("sleep 1000");
+  command.set_value(DOCKER_SLEEP_CMD(1000));
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  dockerInfo.set_image(DOCKER_TEST_IMAGE);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -3575,13 +3649,13 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_ExecutorCleanupWhenLaunchFailed)
   task.mutable_resources()->CopyFrom(offer.resources());
 
   CommandInfo command;
-  command.set_value("ls");
+  command.set_value("exit 0");
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  dockerInfo.set_image(DOCKER_TEST_IMAGE);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -3683,13 +3757,13 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_FetchFailure)
   task.mutable_resources()->CopyFrom(offer.resources());
 
   CommandInfo command;
-  command.set_value("ls");
+  command.set_value("exit 0");
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  dockerInfo.set_image(DOCKER_TEST_IMAGE);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -3794,13 +3868,13 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DockerPullFailure)
   task.mutable_resources()->CopyFrom(offer.resources());
 
   CommandInfo command;
-  command.set_value("ls");
+  command.set_value("exit 0");
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  dockerInfo.set_image(DOCKER_TEST_IMAGE);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_command()->CopyFrom(command);
@@ -3919,7 +3993,11 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DockerInspectDiscard)
   executorInfo.mutable_executor_id()->CopyFrom(executorId);
 
   CommandInfo command;
+#ifdef __WINDOWS__
+  command.set_value(DOCKER_SLEEP_CMD(1000));
+#else
   command.set_value("/bin/test-executor");
+#endif // __WINDOWS__
   executorInfo.mutable_command()->CopyFrom(command);
 
   ContainerInfo containerInfo;
@@ -3927,7 +4005,11 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DockerInspectDiscard)
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
+#ifdef __WINDOWS__
+  dockerInfo.set_image(DOCKER_TEST_IMAGE);
+#else
   dockerInfo.set_image("tnachen/test-executor");
+#endif // __WINDOWS__
 
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
   executorInfo.mutable_container()->CopyFrom(containerInfo);
@@ -4048,30 +4130,46 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_NoTransitionFromKillingToRunning)
 
   const uint16_t testPort = getFreePort().get();
 
+#ifdef __WINDOWS__
+  // On Windows, we will do a command health check instead of a TCP one,
+  // so that this test will work on Windows 10 (Hyper-V isolation) containers.
+  const string command = DOCKER_SLEEP_CMD(1000);
+#else
   // Launch a HTTP server until SIGTERM is received, then sleep for
   // 15 seconds to let the health check fail.
   const string command = strings::format(
       "trap \"sleep 15\" SIGTERM && nc -lk -p %u -e echo",
       testPort).get();
+#endif // __WINDOWS__
 
   TaskInfo task = createTask(offers->front(), command);
 
-  // The docker container runs in host network mode.
-  //
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
-  containerInfo.mutable_docker()->set_image("alpine");
+  containerInfo.mutable_docker()->set_image(DOCKER_TEST_IMAGE);
+#ifndef __WINDOWS__
+  // The non-Windows docker container runs in host network mode.
   containerInfo.mutable_docker()->set_network(
       ContainerInfo::DockerInfo::HOST);
+#endif // __WINDOWS__
 
   task.mutable_container()->CopyFrom(containerInfo);
 
-  // Set `grace_period_seconds` here because it takes some time to launch
-  // Netcat to serve requests.
   HealthCheck healthCheck;
+#ifdef __WINDOWS__
+  healthCheck.set_type(HealthCheck::COMMAND);
+
+  // The first `mkdir` will succeed, but the later ones will fail, so we get
+  // the same behavior as the Linux test.
+  healthCheck.mutable_command()->set_value("mkdir C:\\healthcheck-test");
+#else
   healthCheck.set_type(HealthCheck::TCP);
   healthCheck.mutable_tcp()->set_port(testPort);
+#endif // __WINDOWS__
+
+  // Set `grace_period_seconds` here because it takes some time to launch
+  // Netcat to serve requests.
   healthCheck.set_delay_seconds(0);
   healthCheck.set_grace_period_seconds(15);
   healthCheck.set_interval_seconds(0);
@@ -4137,9 +4235,14 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_NoTransitionFromKillingToRunning)
 }
 
 
+#ifndef __WINDOWS__
 // This test ensures that a task will transition from `TASK_KILLING`
 // to `TASK_KILLED` rather than `TASK_FINISHED` when it is killed,
 // even if it returns an "EXIT_STATUS" of 0 on receiving a SIGTERM.
+//
+// This test is ignored on Windows, since Windows containers seem to
+// always return `STATUS_CONTROL_C_EXIT` and `STATUS_UNSUCCESSFUL` for
+// graceful and forceful shutdown.
 TEST_F(DockerContainerizerTest, ROOT_DOCKER_NoTransitionFromKillingToFinished)
 {
   Shared<Docker> docker(new MockDocker(
@@ -4264,6 +4367,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_NoTransitionFromKillingToFinished)
   AWAIT_READY(termination);
   EXPECT_SOME(termination.get());
 }
+#endif // __WINDOWS__
 
 
 // This test ensures that when `cgroups_enable_cfs` is set on agent,
@@ -4403,9 +4507,11 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_CGROUPS_CFS_CgroupsEnableCFS)
 #endif // __linux__
 
 
+#ifndef __WINDOWS__
 // Run a task as non root while inheriting this ownership from the
 // framework supplied default user. Tests if the sandbox "stdout"
 // is correctly owned and writeable by the tasks user.
+// It isn't run on Windows, because the switch_user flag isn't supported.
 TEST_F(DockerContainerizerTest, ROOT_DOCKER_Non_Root_Sandbox)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
@@ -4553,6 +4659,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Non_Root_Sandbox)
 
   EXPECT_TRUE(strings::contains(stdout.get(), "foo"));
 }
+#endif // __WINDOWS__
 
 
 // This test verifies the DNS configuration of the Docker container
@@ -4568,6 +4675,23 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DefaultDNS)
   Shared<Docker> docker(mockDocker);
 
   slave::Flags flags = CreateSlaveFlags();
+
+#ifdef __WINDOWS__
+  // --dns-option and --dns-search are not supported on Windows.
+  // See https://docs.microsoft.com/en-us/virtualization/windowscontainers/manage-containers/container-networking // NOLINT(whitespace/line_length)
+  Try<ContainerDNSInfo> parse = flags::parse<ContainerDNSInfo>(
+      R"~(
+      {
+        "docker": [
+          {
+            "network_mode": "BRIDGE",
+            "dns": {
+              "nameservers": [ "8.8.8.8", "8.8.4.4" ]
+            }
+          }
+        ]
+      })~");
+#else
   Try<ContainerDNSInfo> parse = flags::parse<ContainerDNSInfo>(
       R"~(
       {
@@ -4582,6 +4706,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DefaultDNS)
           }
         ]
       })~");
+#endif // __WINDOWS__
 
   ASSERT_SOME(parse);
 
@@ -4635,14 +4760,14 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DefaultDNS)
   task.mutable_resources()->CopyFrom(offer.resources());
 
   CommandInfo command;
-  command.set_value("sleep 1000");
+  command.set_value(DOCKER_SLEEP_CMD(1000));
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  dockerInfo.set_image(DOCKER_TEST_IMAGE);
   dockerInfo.set_network(ContainerInfo::DockerInfo::BRIDGE);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
@@ -4685,6 +4810,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DefaultDNS)
 
   EXPECT_EQ(inspect->dns, defaultDNS);
 
+#ifndef __WINDOWS__
   vector<string> defaultDNSSearch;
   std::copy(
       flags.default_container_dns->docker(0).dns().search().begin(),
@@ -4700,6 +4826,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DefaultDNS)
       std::back_inserter(defaultDNSOption));
 
   EXPECT_EQ(inspect->dnsOptions, defaultDNSOption);
+#endif // __WINDOWS__
 
   Future<Option<ContainerTermination>> termination =
     dockerContainerizer.wait(containerId.get());
@@ -4713,6 +4840,9 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DefaultDNS)
 
 
 // Fixture for testing IPv6 support for docker containers on host network.
+//
+// TODO(akagup): Windows containers do not support IPv6, but they should
+// in the future, so enable these when IPv6 is supported. See MESOS-8566.
 //
 // TODO(asridharan): Currently in the `Setup` and `TearDown` methods
 // of this class we re-initialize libprocess to take an IPv6 address.
@@ -4751,7 +4881,9 @@ protected:
 // is assumed to have an IPv4 address and an IPv6 address. The test
 // passes if the Mesos state correctly exposes both the IPv4 and IPv6
 // address.
-TEST_F(DockerContainerizerIPv6Test, ROOT_DOCKER_LaunchIPv6HostNetwork)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(
+    DockerContainerizerIPv6Test,
+    ROOT_DOCKER_LaunchIPv6HostNetwork)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -4811,14 +4943,14 @@ TEST_F(DockerContainerizerIPv6Test, ROOT_DOCKER_LaunchIPv6HostNetwork)
   TaskInfo task = createTask(
       offer.slave_id(),
       offer.resources(),
-      SLEEP_COMMAND(10000));
+      DOCKER_SLEEP_CMD(10000));
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  dockerInfo.set_image(DOCKER_TEST_IMAGE);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_container()->CopyFrom(containerInfo);
@@ -4944,7 +5076,7 @@ protected:
 // Launches a docker container on the docker user network. The docker network
 // is assumed to have an IPv4 address and an IPv6 address. The test passes if
 // the Mesos state correctly exposes both the IPv4 and IPv6 address.
-TEST_F(
+TEST_F_TEMP_DISABLED_ON_WINDOWS(
     DockerContainerizerIPv6UserNetworkTest,
     ROOT_DOCKER_USERNETWORK_LaunchIPv6Container)
 {
@@ -5003,14 +5135,14 @@ TEST_F(
   TaskInfo task = createTask(
       offer.slave_id(),
       offer.resources(),
-      SLEEP_COMMAND(10000));
+      DOCKER_SLEEP_CMD(10000));
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  dockerInfo.set_image(DOCKER_TEST_IMAGE);
   dockerInfo.set_network(ContainerInfo::DockerInfo::USER);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
@@ -5123,11 +5255,23 @@ TEST_F(
 class HungDockerTest : public DockerContainerizerTest
 {
 public:
-  const string testDockerEnvFile = "test-docker.env";
   const string testDockerBinary = "docker";
+#ifdef __WINDOWS__
+  const string testDockerScript = "test-docker.bat";
+  const string testDockerEnvFile = "test-docker-env.bat";
+#else
   const string testDockerScript = "test-docker.sh";
+  const string testDockerEnvFile = "test-docker.env";
+#endif // __WINDOWS__
+  
+#ifdef __WINDOWS__
+  // Windows do loop fails if the variable doesn't exist.
+  string commandsEnv = "set DELAYED_COMMANDS=()";
+  string delayEnv = "set DELAY_SECONDS=0";
+#else
   string commandsEnv;
   string delayEnv;
+#endif // __WINDOWS__
 
   virtual slave::Flags CreateSlaveFlags()
   {
@@ -5150,7 +5294,13 @@ public:
 
   void setDelayedCommands(const std::vector<string>& commands)
   {
-    commandsEnv = "DELAYED_COMMANDS=( ";
+#ifdef __WINDOWS__
+    commandsEnv = "set ";
+#else
+    commandsEnv = "";
+#endif // __WINDOWS__
+
+    commandsEnv += "DELAYED_COMMANDS=( ";
     foreach (const string& command, commands) {
       commandsEnv += (command + " ");
     }
@@ -5161,7 +5311,13 @@ public:
 
   void setDelay(const int seconds)
   {
-    delayEnv = "DELAY_SECONDS=" + stringify(seconds);
+#ifdef __WINDOWS__
+    delayEnv = "set ";
+#else
+    delayEnv = "";
+#endif // __WINDOWS__
+
+    delayEnv += "DELAY_SECONDS=" + stringify(seconds);
 
     writeEnv();
   }
@@ -5172,6 +5328,21 @@ public:
 
     // Write a wrapper script which allows us to delay Docker commands.
     const string dockerScriptText =
+#ifdef __WINDOWS__
+      // Although `CreateProcess` states that you need to specify `cmd` when
+      // running a batch script, `CreateProcess` can actually execute batch
+      // scripts as executables.
+     // "@echo off\n"
+      "setlocal enabledelayedexpansion\n"
+      "call \"" + path::join(os::getcwd(), testDockerEnvFile) + "\"\n"
+      "set ACTIVE_COMMAND=%3\n"
+      "for %%G in %DELAYED_COMMANDS% do (\n"
+      "  if %ACTIVE_COMMAND% == %%G (\n"
+      "    powershell -NoProfile -Command \"Start-Sleep -Seconds %DELAY_SECONDS%\"\n" 
+      "  )\n"
+      ")\n" +
+      testDockerBinary + " %*\n";
+#else
       "#!/usr/bin/env bash\n"
       "source " + stringify(path::join(os::getcwd(), testDockerEnvFile)) + "\n"
       "ACTIVE_COMMAND=$3\n"
@@ -5181,13 +5352,16 @@ public:
       "  fi\n"
       "done\n" +
       testDockerBinary + " \"$@\"\n";
+#endif // __WINDOWS__
 
     Try<Nothing> write = os::write(testDockerScript, dockerScriptText);
     ASSERT_SOME(write);
 
+#ifndef __WINDOWS__
     Try<Nothing> chmod = os::chmod(
         testDockerScript, S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
     ASSERT_SOME(chmod);
+#endif // __WINDOWS__
 
     // Set a very long delay by default to simulate an indefinitely
     // hung Docker daemon.
@@ -5196,8 +5370,7 @@ public:
 };
 
 
-TEST_F_TEMP_DISABLED_ON_WINDOWS(
-    HungDockerTest, ROOT_DOCKER_InspectHungDuringPull)
+TEST_F(HungDockerTest, ROOT_DOCKER_InspectHungDuringPull)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -5268,7 +5441,7 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image("alpine");
+  dockerInfo.set_image(DOCKER_TEST_IMAGE);
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   task.mutable_container()->CopyFrom(containerInfo);
