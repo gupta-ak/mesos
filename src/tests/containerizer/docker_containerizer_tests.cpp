@@ -51,10 +51,6 @@
 #include "tests/mesos.hpp"
 #include "tests/mock_docker.hpp"
 
-#ifdef __WINDOWS__
-#include <winnt.h>
-#endif // __WINDOWS__
-
 using namespace mesos::internal::slave::paths;
 using namespace mesos::internal::slave::state;
 
@@ -111,7 +107,7 @@ namespace tests {
   // issues with volume mounts, so we pull the servercore image instead.
   static constexpr char DOCKER_IMAGE[]="microsoft/windowsservercore:1709";
   static constexpr char DOCKER_INKY_IMAGE[]="windows-inky";
-  static constexpr char  DOCKER_CMD[]="ping 127.0.0.1 -n 1000";
+  static constexpr char DOCKER_CMD[]="ping 127.0.0.1 -n 1000";
 #else
   static constexpr char DOCKER_IMAGE[]="alpine";
   static constexpr char DOCKER_CMD[]="sleep 1000";
@@ -2781,7 +2777,10 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Default_CMD_Args)
 // The slave is stopped before the first update for a task is received
 // from the executor. When it comes back up we make sure the executor
 // re-registers and the slave properly sends the update.
-TEST_F(DockerContainerizerTest, ROOT_DOCKER_SlaveRecoveryTaskContainer)
+//
+// TODO(andschwa/akagup): Enable this test on Windows once slave recovery
+// works.
+TEST_F_TEMP_DISABLED_ON_WINDOWS(DockerContainerizerTest, ROOT_DOCKER_SlaveRecoveryTaskContainer)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -2941,7 +2940,10 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_SlaveRecoveryTaskContainer)
 // parse and can even properly use for sending other messages, but the
 // current implementation of 'UPID::operator bool()' fails if the IP
 // component of a PID is '0'.
-TEST_F(DockerContainerizerTest,
+// 
+// TODO(andschwa/akagup): Enable this test on Windows once slave recovery
+// works.
+TEST_F_TEMP_DISABLED_ON_WINDOWS(DockerContainerizerTest,
        DISABLED_ROOT_DOCKER_SlaveRecoveryExecutorContainer)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
@@ -3112,7 +3114,7 @@ TEST_F(DockerContainerizerTest,
 // exposing the host port to the container port, by sending data
 // to the host port and receiving it in the container by listening
 // to the mapped container port.
-TEST_F(DockerContainerizerTest, ROOT_DOCKER_NC_PortMapping)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(DockerContainerizerTest, ROOT_DOCKER_NC_PortMapping)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -3189,7 +3191,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_NC_PortMapping)
   // Set shell to false because we want powershell, not cmd.
   command.set_shell(false);
   command.set_value("powershell");
-  command.add_arguments("$l=[System.Net.Sockets.TcpListener]1000;l.Start()")
+  command.add_arguments("$l=[System.Net.Sockets.TcpListener]1000;l.Start()");
 #endif // __WINDOWS__
 
   ContainerInfo containerInfo;
@@ -3250,7 +3252,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_NC_PortMapping)
 #else
   Try<process::Subprocess> s = process::subprocess(
     "echo " + uuid + " | nc lcaol"
-  )
+  );
 #endif // __WINDOWS__
 
   ASSERT_SOME(s);
@@ -4562,6 +4564,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_CGROUPS_CFS_CgroupsEnableCFS)
 // Run a task as non root while inheriting this ownership from the
 // framework supplied default user. Tests if the sandbox "stdout"
 // is correctly owned and writeable by the tasks user.
+// It isn't run on Windows, because the switch_user flag isn't supported.
 TEST_F(DockerContainerizerTest, ROOT_DOCKER_Non_Root_Sandbox)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
@@ -4725,6 +4728,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DefaultDNS)
   Shared<Docker> docker(mockDocker);
 
   slave::Flags flags = CreateSlaveFlags();
+#ifndef __WINDOWS__
   Try<ContainerDNSInfo> parse = flags::parse<ContainerDNSInfo>(
       R"~(
       {
@@ -4739,7 +4743,22 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DefaultDNS)
           }
         ]
       })~");
-
+#else
+  // --dns-option and --dns-search are not supported on Windows.
+  // See https://docs.microsoft.com/en-us/virtualization/windowscontainers/manage-containers/container-networking // NOLINT
+  Try<ContainerDNSInfo> parse = flags::parse<ContainerDNSInfo>(
+      R"~(
+      {
+        "docker": [
+          {
+            "network_mode": "BRIDGE",
+            "dns": {
+              "nameservers": [ "8.8.8.8", "8.8.4.4" ]
+            }
+          }
+        ]
+      })~");
+#endif // __WINDOWS__
   ASSERT_SOME(parse);
 
   flags.default_container_dns = parse.get();
@@ -4842,6 +4861,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DefaultDNS)
 
   EXPECT_EQ(inspect->dns, defaultDNS);
 
+#ifndef __WINDOWS__
   vector<string> defaultDNSSearch;
   std::copy(
       flags.default_container_dns->docker(0).dns().search().begin(),
@@ -4857,6 +4877,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DefaultDNS)
       std::back_inserter(defaultDNSOption));
 
   EXPECT_EQ(inspect->dnsOptions, defaultDNSOption);
+#endif // __WINDOWS__
 
   Future<Option<ContainerTermination>> termination =
     dockerContainerizer.wait(containerId.get());
@@ -4868,9 +4889,11 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DefaultDNS)
   EXPECT_SOME(termination.get());
 }
 
-
+#ifndef __WINDOWS__
 // Fixture for testing IPv6 support for docker containers on host network.
-//
+// Docker container on Windows do not support IPv6, so these tests are
+// disabled. (See https://docs.microsoft.com/en-us/virtualization/windowscontainers/manage-containers/container-networking) // NOLINT
+// 
 // TODO(asridharan): Currently in the `Setup` and `TearDown` methods
 // of this class we re-initialize libprocess to take an IPv6 address.
 // Ideally, we should be moving this into a more general test fixture
@@ -5326,6 +5349,7 @@ TEST_F(
   ASSERT_FALSE(
     exists(docker, containerId.get(), ContainerState::RUNNING));
 }
+#endif // __WINDOWS__
 } // namespace tests {
 } // namespace internal {
 } // namespace mesos {
