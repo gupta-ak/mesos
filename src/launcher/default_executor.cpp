@@ -547,6 +547,9 @@ protected:
     CHECK(launched);
     CHECK_EQ(containerIds.size(), (size_t) taskGroup.tasks().size());
 
+    checks::ContainerRuntimeInfo runtimeInfo;
+    runtimeInfo.type = checks::ContainerRuntime::MESOS;
+
     int index = 0;
     foreach (const ContainerID& containerId, containerIds) {
       const TaskInfo& task = taskGroup.tasks().Get(index++);
@@ -564,7 +567,8 @@ protected:
               taskId,
               containerId,
               agent,
-              authorizationHeader);
+              authorizationHeader,
+              runtimeInfo);
 
         if (checker.isError()) {
           // TODO(anand): Should we send a TASK_FAILED instead?
@@ -585,7 +589,8 @@ protected:
               taskId,
               containerId,
               agent,
-              authorizationHeader);
+              authorizationHeader,
+              runtimeInfo);
 
         if (healthChecker.isError()) {
           // TODO(anand): Should we send a TASK_FAILED instead?

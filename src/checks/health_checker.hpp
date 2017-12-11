@@ -29,6 +29,8 @@
 #include <stout/lambda.hpp>
 #include <stout/option.hpp>
 
+#include "checks/checker_process.hpp"
+
 #include "messages/messages.hpp"
 
 namespace mesos {
@@ -57,6 +59,8 @@ public:
    *     namespaces.
    * @param namespaces The namespaces to enter prior to performing the health
    *     check.
+   * @param runtime The runtime information from the containierizer that
+   *     called the health check.
    * @return A `HealthChecker` object or an error if `create` fails.
    *
    * @todo A better approach would be to return a stream of updates, e.g.,
@@ -71,7 +75,8 @@ public:
       const lambda::function<void(const TaskHealthStatus&)>& callback,
       const TaskID& taskId,
       const Option<pid_t>& taskPid,
-      const std::vector<std::string>& namespaces);
+      const std::vector<std::string>& namespaces,
+      const ContainerRuntimeInfo& runtime);
 
   /**
    * Attempts to create a `HealthChecker` object. In case of success, health
@@ -90,6 +95,8 @@ public:
    * @param agentURL The URL of the agent.
    * @param authorizationHeader The authorization header the health checker
    *     should use to authenticate with the agent operator API.
+   * @param runtime The runtime information from the containierizer that
+   *     called the health check.
    * @return A `HealthChecker` object or an error if `create` fails.
    *
    * @todo A better approach would be to return a stream of updates, e.g.,
@@ -102,7 +109,8 @@ public:
       const TaskID& taskId,
       const ContainerID& taskContainerId,
       const process::http::URL& agentURL,
-      const Option<std::string>& authorizationHeader);
+      const Option<std::string>& authorizationHeader,
+      const ContainerRuntimeInfo& runtime);
 
   ~HealthChecker();
 
@@ -121,6 +129,7 @@ private:
       const Option<ContainerID>& taskContainerId,
       const Option<process::http::URL>& agentURL,
       const Option<std::string>& authorizationHeader,
+      const ContainerRuntimeInfo& runtime,
       bool commandCheckViaAgent);
 
   void processCheckResult(const Try<CheckStatusInfo>& result);

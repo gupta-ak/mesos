@@ -614,33 +614,6 @@ private:
                    << validateVersion.error();
         return;
       }
-
-      // Wrap the original health check command in `docker exec`.
-      const CommandInfo& command = healthCheck.command();
-
-      vector<string> commandArguments;
-      commandArguments.push_back(docker->getPath());
-      commandArguments.push_back("exec");
-      commandArguments.push_back(containerName);
-
-      if (command.shell()) {
-        commandArguments.push_back("sh");
-        commandArguments.push_back("-c");
-        commandArguments.push_back("\"");
-        commandArguments.push_back(command.value());
-        commandArguments.push_back("\"");
-      } else {
-        commandArguments.push_back(command.value());
-
-        foreach (const string& argument, command.arguments()) {
-          commandArguments.push_back(argument);
-        }
-      }
-
-      healthCheck.mutable_command()->set_shell(true);
-      healthCheck.mutable_command()->clear_arguments();
-      healthCheck.mutable_command()->set_value(
-          strings::join(" ", commandArguments));
     }
 
     vector<string> namespaces;
@@ -651,6 +624,11 @@ private:
       namespaces.push_back("net");
     }
 
+    checks::ContainerRuntimeInfo info;
+    info.type = checks::ContainerRuntime::DOCKER;
+    info.dockerInfo =
+      {docker->getPath(), docker->getSocket(), containerName};
+
     Try<Owned<checks::HealthChecker>> _checker =
       checks::HealthChecker::create(
           healthCheck,
@@ -658,7 +636,8 @@ private:
           defer(self(), &Self::taskHealthUpdated, lambda::_1),
           task.task_id(),
           containerPid,
-          namespaces);
+          namespaces,
+          info);
 
     if (_checker.isError()) {
       // TODO(gilbert): Consider ABORT and return a TASK_FAILED here.

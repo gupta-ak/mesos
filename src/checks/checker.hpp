@@ -30,6 +30,8 @@
 #include <stout/option.hpp>
 #include <stout/try.hpp>
 
+#include "checks/checker_process.hpp"
+
 namespace mesos {
 namespace internal {
 namespace checks {
@@ -56,6 +58,8 @@ public:
    * @param taskPid The target task's pid used to enter the specified
    *     namespaces.
    * @param namespaces The namespaces to enter prior to performing the check.
+   * @param runtime The runtime information from the containierizer that
+   *     called the health check.
    * @return A `Checker` object or an error if `create` fails.
    *
    * @todo A better approach would be to return a stream of updates, e.g.,
@@ -67,7 +71,8 @@ public:
       const lambda::function<void(const CheckStatusInfo&)>& callback,
       const TaskID& taskId,
       const Option<pid_t>& taskPid,
-      const std::vector<std::string>& namespaces);
+      const std::vector<std::string>& namespaces,
+      const ContainerRuntimeInfo& runtime);
 
   /**
    * Attempts to create a `Checker` object. In case of success, checking
@@ -87,6 +92,8 @@ public:
    * @param agentURL The URL of the agent.
    * @param authorizationHeader The authorization header the checker should use
    *     to authenticate with the agent operator API.
+   * @param runtime The runtime information from the containierizer that
+   *     called the health check.
    * @return A `Checker` object or an error if `create` fails.
    *
    * @todo A better approach would be to return a stream of updates, e.g.,
@@ -99,7 +106,8 @@ public:
       const TaskID& taskId,
       const ContainerID& taskContainerId,
       const process::http::URL& agentURL,
-      const Option<std::string>& authorizationHeader);
+      const Option<std::string>& authorizationHeader,
+      const ContainerRuntimeInfo& runtime);
 
   ~Checker();
 
@@ -122,6 +130,7 @@ private:
       const Option<ContainerID>& _taskContainerId,
       const Option<process::http::URL>& _agentURL,
       const Option<std::string>& _authorizationHeader,
+      const ContainerRuntimeInfo& _runtime,
       bool _commandCheckViaAgent);
 
   void processCheckResult(const Try<CheckStatusInfo>& result);

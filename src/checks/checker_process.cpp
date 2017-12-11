@@ -196,6 +196,7 @@ CheckerProcess::CheckerProcess(
     const Option<string>& _authorizationHeader,
     const Option<string>& _scheme,
     const std::string& _name,
+    const ContainerRuntimeInfo& _runtime,
     bool _commandCheckViaAgent,
     bool _ipv6)
   : ProcessBase(process::ID::generate("checker")),
@@ -210,6 +211,7 @@ CheckerProcess::CheckerProcess(
     authorizationHeader(_authorizationHeader),
     scheme(_scheme),
     name(_name),
+    runtime(_runtime),
     commandCheckViaAgent(_commandCheckViaAgent),
     ipv6(_ipv6),
     paused(false)
@@ -376,7 +378,21 @@ Future<int> CheckerProcess::commandCheck()
   // Launch the subprocess.
   Try<Subprocess> s = Error("Not launched");
 
-  if (command.shell()) {
+  if (runtime.type == ContainerRuntime::DOCKER) {
+    // Wrap `docker exec` around the command.
+    const string cmdLine = wrapDockerExec(command);
+
+    VLOG(1) << "Launching " << name << " '" << cmdLine << "'"
+            << " for task '" << taskId << "'";
+
+    s = process::subprocess(
+        cmdLine,
+        Subprocess::PATH(os::DEV_NULL),
+        Subprocess::FD(STDERR_FILENO),
+        Subprocess::FD(STDERR_FILENO),
+        environment,
+        clone);
+  } else if (command.shell()) {
     // Use the shell variant.
     VLOG(1) << "Launching " << name << " '" << command.value() << "'"
             << " for task '" << taskId << "'";
@@ -442,6 +458,35 @@ Future<int> CheckerProcess::commandCheck()
 
       return exitCode.get();
     });
+}
+
+
+string CheckerProcess::wrapDockerExec(const CommandInfo& command)
+{
+  // Wrap the original health check command in `docker exec`.
+  vector<string> commandArguments = {
+    runtime.dockerInfo.dockerPath,
+    "-H",
+    runtime.dockerInfo.socketName,
+    "exec",
+    runtime.dockerInfo.containerName
+  };
+
+  if (command.shell()) {
+    commandArguments.push_back(os::Shell::name);
+    commandArguments.push_back(os::Shell::arg1);
+
+    commandArguments.push_back("\"");
+    commandArguments.push_back(command.value());
+    commandArguments.push_back("\"");
+  } else {
+    commandArguments.push_back(command.value());
+
+    foreach (const string& argument, command.arguments()) {
+      commandArguments.push_back(argument);
+    }
+  }
+  return strings::join(" ", commandArguments);
 }
 
 

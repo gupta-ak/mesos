@@ -89,7 +89,8 @@ Try<Owned<Checker>> Checker::create(
     const lambda::function<void(const CheckStatusInfo&)>& callback,
     const TaskID& taskId,
     const Option<pid_t>& taskPid,
-    const vector<string>& namespaces)
+    const vector<string>& namespaces,
+    const ContainerRuntimeInfo& runtime)
 {
   // Validate the `CheckInfo` protobuf.
   Option<Error> error = validation::checkInfo(check);
@@ -108,6 +109,7 @@ Try<Owned<Checker>> Checker::create(
           None(),
           None(),
           None(),
+          runtime,
           false));
 }
 
@@ -119,7 +121,8 @@ Try<Owned<Checker>> Checker::create(
     const TaskID& taskId,
     const ContainerID& taskContainerId,
     const http::URL& agentURL,
-    const Option<string>& authorizationHeader)
+    const Option<string>& authorizationHeader,
+    const ContainerRuntimeInfo& runtime)
 {
   // Validate the `CheckInfo` protobuf.
   Option<Error> error = validation::checkInfo(check);
@@ -138,6 +141,7 @@ Try<Owned<Checker>> Checker::create(
           taskContainerId,
           agentURL,
           authorizationHeader,
+          runtime,
           true));
 }
 
@@ -152,6 +156,7 @@ Checker::Checker(
     const Option<ContainerID>& _taskContainerId,
     const Option<http::URL>& _agentURL,
     const Option<string>& _authorizationHeader,
+    const ContainerRuntimeInfo& _runtime,
     bool _commandCheckViaAgent)
   : check(_check),
     callback(_callback),
@@ -175,6 +180,7 @@ Checker::Checker(
           _authorizationHeader,
           None(),
           name,
+          _runtime,
           _commandCheckViaAgent));
 
   spawn(process.get());

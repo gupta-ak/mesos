@@ -177,7 +177,8 @@ Try<Owned<HealthChecker>> HealthChecker::create(
     const lambda::function<void(const TaskHealthStatus&)>& callback,
     const TaskID& taskId,
     const Option<pid_t>& taskPid,
-    const vector<string>& namespaces)
+    const vector<string>& namespaces,
+    const ContainerRuntimeInfo& runtime)
 {
   // Validate the 'HealthCheck' protobuf.
   Option<Error> error = validation::healthCheck(healthCheck);
@@ -196,6 +197,7 @@ Try<Owned<HealthChecker>> HealthChecker::create(
           None(),
           None(),
           None(),
+          runtime,
           false));
 }
 
@@ -207,7 +209,8 @@ Try<Owned<HealthChecker>> HealthChecker::create(
     const TaskID& taskId,
     const ContainerID& taskContainerId,
     const process::http::URL& agentURL,
-    const Option<string>& authorizationHeader)
+    const Option<string>& authorizationHeader,
+    const ContainerRuntimeInfo& runtime)
 {
   // Validate the 'HealthCheck' protobuf.
   Option<Error> error = validation::healthCheck(healthCheck);
@@ -226,6 +229,7 @@ Try<Owned<HealthChecker>> HealthChecker::create(
           taskContainerId,
           agentURL,
           authorizationHeader,
+          runtime,
           true));
 }
 
@@ -240,6 +244,7 @@ HealthChecker::HealthChecker(
       const Option<ContainerID>& taskContainerId,
       const Option<process::http::URL>& agentURL,
       const Option<std::string>& authorizationHeader,
+      const ContainerRuntimeInfo& runtime,
       bool commandCheckViaAgent)
   : healthCheck(_healthCheck),
     callback(_callback),
@@ -283,6 +288,7 @@ HealthChecker::HealthChecker(
           authorizationHeader,
           scheme,
           name,
+          runtime,
           commandCheckViaAgent,
           ipv6));
 

@@ -650,6 +650,12 @@ protected:
 
     LOG(INFO) << "Forked command at " << pid;
 
+    // If there is an image (rootfs), then we are running in UCR mode, else
+    // it's the regular Mesos containerizer.
+    checks::ContainerRuntimeInfo runtimeInfo;
+    runtimeInfo.type = rootfs.isSome() ? checks::ContainerRuntime::UCR
+                                       : checks::ContainerRuntime::MESOS;
+
     if (task.has_check()) {
       vector<string> namespaces;
       if (rootfs.isSome() &&
@@ -670,7 +676,8 @@ protected:
             defer(self(), &Self::taskCheckUpdated, taskId.get(), lambda::_1),
             taskId.get(),
             pid,
-            namespaces);
+            namespaces,
+            runtimeInfo);
 
       if (_checker.isError()) {
         // TODO(alexr): Consider ABORT and return a TASK_FAILED here.
@@ -700,7 +707,8 @@ protected:
             defer(self(), &Self::taskHealthUpdated, lambda::_1),
             taskId.get(),
             pid,
-            namespaces);
+            namespaces,
+            runtimeInfo);
 
       if (_healthChecker.isError()) {
         // TODO(gilbert): Consider ABORT and return a TASK_FAILED here.

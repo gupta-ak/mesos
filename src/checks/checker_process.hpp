@@ -37,6 +37,36 @@ namespace mesos {
 namespace internal {
 namespace checks {
 
+// ContainerRuntime describes the type of containerizer that called the health
+// check.
+enum class ContainerRuntime
+{
+    UCR,
+    DOCKER,
+    MESOS
+};
+
+// DockerRuntimeInfo contains the necessary docker runtime information
+// to run the health check.
+struct DockerRuntimeInfo
+{
+    std::string dockerPath;
+    std::string socketName;
+    std::string containerName;
+};
+
+// ContainerRuntimeInfo contains the containerizer-specific runtime
+// information to run the health check.
+struct ContainerRuntimeInfo
+{
+    ContainerRuntime type;
+
+    // Right now only the docker containizer on Windows needs runtime
+    // information, but future Windows containiers like UCR might also
+    // need runtime specific information.
+    DockerRuntimeInfo dockerInfo;
+};
+
 class CheckerProcess : public ProtobufProcess<CheckerProcess>
 {
 public:
@@ -55,6 +85,7 @@ public:
       const Option<std::string>& _authorizationHeader,
       const Option<std::string>& _scheme,
       const std::string& _name,
+      const ContainerRuntimeInfo& _runtime,
       bool _commandCheckViaAgent,
       bool _ipv6 = false);
 
@@ -75,6 +106,8 @@ private:
       const Result<CheckStatusInfo>& result);
 
   process::Future<int> commandCheck();
+
+  std::string wrapDockerExec(const CommandInfo& command);
 
   process::Future<int> nestedCommandCheck();
   void _nestedCommandCheck(std::shared_ptr<process::Promise<int>> promise);
@@ -138,6 +171,7 @@ private:
   const Option<std::string> authorizationHeader;
   const Option<std::string> scheme;
   const std::string name;
+  const ContainerRuntimeInfo runtime;
   const bool commandCheckViaAgent;
 
   // If set to true, the TCP/HTTP(S) check will be performed over IPv6,
