@@ -30,6 +30,8 @@
 
 #include <gtest/gtest.h>
 
+#include <checks/checker_process.hpp>
+
 #include "docker/docker.hpp"
 
 #include <process/gmock.hpp>
@@ -78,6 +80,8 @@ using std::string;
 using std::vector;
 
 using process::Owned;
+using process::Future;
+using process::Failure;
 
 using stout::internal::tests::TestFilter;
 
@@ -279,6 +283,15 @@ public:
     } else {
       dockerError = docker.error();
     }
+
+#ifdef __WINDOWS__
+    // On Windows, the ability to enter another container's namespace was
+    // enabled on newer Windows builds (>=1709). So, check if we can do
+    // this to run the docker health check tests.
+    if (dockerError.isNone() && dockerUserNetworkError.isNone()) {
+      dockerNamespaceError = runNetNamespaceCheck(docker.get());
+    }
+#endif // __WINDOWS__
 #else
     dockerError = Error("Docker tests are not supported on this platform");
 #endif // __linux__ || __WINDOWS__
@@ -300,6 +313,15 @@ public:
         << "-------------------------------------------------------------"
         << std::endl;
     }
+
+    if (dockerNamespaceError.isSome()) {
+      std::cerr
+        << "-------------------------------------------------------------\n"
+        << "We cannot run any Docker health checks tests because:\n"
+        << dockerNamespaceError->message << "\n"
+        << "-------------------------------------------------------------"
+        << std::endl;
+    }
   }
 
   bool disable(const ::testing::TestInfo* test) const
@@ -308,13 +330,96 @@ public:
       return matches(test, "DOCKER_");
     }
 
-    return matches(test, "DOCKER_USERNETWORK_") &&
-      dockerUserNetworkError.isSome();
+    if (dockerUserNetworkError.isSome()) {
+      return matches(test, "DOCKER_USERNETWORK_");
+    }
+
+    return matches(test, "DOCKER_") &&
+      matches(test, "NETNAMESPACE_") &&
+      dockerNamespaceError.isSome();
   }
 
 private:
+#ifdef __WINDOWS__
+  Option<Error> launchAndWaitContainer(
+      Owned<Docker>& docker,
+      const string& containerName,
+      const string& networkName,
+      const string& errorString)
+  {
+    Docker::RunOptions opts;
+    opts.privileged = false;
+    opts.name = containerName;
+    opts.network = networkName;
+    opts.additionalOptions = {"-d"};
+    opts.image = mesos::internal::checks::DOCKER_HEALTH_CHECK_IMAGE;
+    opts.arguments = {"pwsh", "-Command", "Start-Sleep", "-Seconds", "60"};
+
+    // Launches the container in detached mode, which means that docker
+    // run should return as soon as the container successfully launched.
+    Future<Nothing> launch =
+      docker->run(opts, process::Subprocess::PATH(os::DEV_NULL))
+        .then([=](const Option<int>& status) -> Future<Nothing> {
+          if (!status.isSome() || status.get() != 0) {
+            return Failure(errorString);
+          }
+          return Nothing();
+        });
+
+    launch.await(Seconds(30));
+    if (launch.isReady()) {
+      return None();
+    } else if (launch.isFailed()) {
+      return Error(launch.failure());
+    }
+    return Error("Container " + containerName + " launch timed out");
+  }
+
+  Option<Error> runNetNamespaceCheck(Owned<Docker>& docker) {
+    // Use `os::system` here because `docker->inspect()` only works on
+    // containers even though `docker inspect` cli command works on images.
+    int res = os::system(
+        docker->getPath() + " -H " + docker->getSocket() +
+        " inspect " +
+        string(mesos::internal::checks::DOCKER_HEALTH_CHECK_IMAGE) + " > NUL");
+
+    if (res != 0) {
+      return Error("Cannot find " +
+                   string(mesos::internal::checks::DOCKER_HEALTH_CHECK_IMAGE));
+    }
+
+    // Launch two containers. One with regular network settings and the
+    // other with "--network=container:<ID>" to enter the first container's
+    // namespace.
+    const string container1 = id::UUID::random().toString();
+    const string container2 = id::UUID::random().toString();
+
+    Option<Error> err = launchAndWaitContainer(
+        docker,
+        container1,
+        "nat",
+        "Failed to launch first container");
+
+    if (err.isSome()) {
+      docker->rm(container1, true).await(Seconds(15));
+      return err;
+    }
+
+    err = launchAndWaitContainer(
+        docker,
+        container2,
+        "container:" + container1,
+        "Failed to launch second container in first container's namespace");
+
+    docker->rm(container2, true).await(Seconds(15));
+    docker->rm(container1, true).await(Seconds(15));
+    return err;
+  }
+#endif // __WINDOWS__
+
   Option<Error> dockerError;
   Option<Error> dockerUserNetworkError;
+  Option<Error> dockerNamespaceError;
 };
 
 

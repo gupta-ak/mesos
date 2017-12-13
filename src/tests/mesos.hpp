@@ -2151,6 +2151,8 @@ inline mesos::Environment createEnvironment(
 
 inline void createDockerIPv6UserNetwork()
 {
+  // Docker IPv6 is not supported on Windows, so no-op on that platform.
+#ifndef __WINDOWS__
   // Create a Docker user network with IPv6 enabled.
   Try<std::string> dockerCommand = strings::format(
       "docker network create --driver=bridge --ipv6 "
@@ -2177,11 +2179,14 @@ inline void createDockerIPv6UserNetwork()
     << "Unable to create the Docker IPv6 network "
     << DOCKER_IPv6_NETWORK
     << " : " << err.get();
+#endif // __WINDOWS__
 }
 
 
 inline void removeDockerIPv6UserNetwork()
 {
+  // Docker IPv6 is not supported on Windows, so no-op on that platform.
+#ifndef __WINDOWS__
   // Delete the Docker user network.
   Try<std::string> dockerCommand = strings::format(
       "docker network rm %s",
@@ -2209,6 +2214,7 @@ inline void removeDockerIPv6UserNetwork()
     << "Unable to delete the Docker IPv6 network "
     << DOCKER_IPv6_NETWORK
     << " : " << err.get();
+#endif // __WINDOWS__
 }
 
 
