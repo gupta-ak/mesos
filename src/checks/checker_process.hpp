@@ -67,6 +67,10 @@ struct ContainerRuntimeInfo
     DockerRuntimeInfo dockerInfo;
 };
 
+#ifdef __WINDOWS__
+constexpr char DOCKER_HEALTH_CHECK_IMAGE[] = "microsoft/powershell:nanoserver";
+#endif // __WINDOWS__
+
 class CheckerProcess : public ProtobufProcess<CheckerProcess>
 {
 public:
@@ -136,7 +140,12 @@ private:
       const Stopwatch& stopwatch,
       const process::Future<int>& future);
 
+#ifdef __WINDOWS__
+  std::vector<std::string> dockerNetworkCmd(const DockerRuntimeInfo& info);
+#endif // __WINDOWS__
+
   process::Future<int> httpCheck();
+  std::vector<std::string> createHttpCheckCmd(const CheckInfo::Http& http);
   process::Future<int> _httpCheck(
       const std::tuple<process::Future<Option<int>>,
                        process::Future<std::string>,
@@ -146,6 +155,7 @@ private:
       const process::Future<int>& future);
 
   process::Future<bool> tcpCheck();
+  std::vector<std::string> createTcpCheckCmd(const CheckInfo::Tcp& tcp);
   process::Future<bool> _tcpCheck(
       const std::tuple<process::Future<Option<int>>,
                        process::Future<std::string>,

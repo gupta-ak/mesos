@@ -476,9 +476,15 @@ string CheckerProcess::wrapDockerExec(const CommandInfo& command)
     commandArguments.push_back(os::Shell::name);
     commandArguments.push_back(os::Shell::arg1);
 
+    // Quote the command on non Windows platforms. On Windows, the command
+    // will be quoted later by stout.
+#ifdef __WINDOWS__
+    commandArguments.push_back(command.value());
+#else
     commandArguments.push_back("\"");
     commandArguments.push_back(command.value());
     commandArguments.push_back("\"");
+#endif // __WINDOWS__
   } else {
     commandArguments.push_back(command.value());
 
@@ -864,45 +870,36 @@ void CheckerProcess::processCommandCheckResult(
 }
 
 
+#ifdef __WINDOWS__
+vector<string> CheckerProcess::dockerNetworkCmd(const DockerRuntimeInfo& info)
+{
+  return {
+    info.dockerPath,
+    "-H",
+    info.socketName,
+    "run",
+    "--rm",
+    "--network=container:" + info.containerName,
+    DOCKER_HEALTH_CHECK_IMAGE,
+    "pwsh",
+    "-Command"
+  };
+}
+#endif // __WINDOWS__
+
+
 Future<int> CheckerProcess::httpCheck()
 {
   CHECK_EQ(CheckInfo::HTTP, check.type());
   CHECK(check.has_http());
 
   const CheckInfo::Http& http = check.http();
-
-  const string _scheme = scheme.isSome() ? scheme.get() : DEFAULT_HTTP_SCHEME;
-  const string path = http.has_path() ? http.path() : "";
-
-  // As per "curl --manual", the square brackets are required to tell curl that
-  // it's an IPv6 address, and we need to set "-g" option below to stop curl
-  // from interpreting the square brackets as special globbing characters.
-  const string domain = ipv6 ?
-                        "[" + string(DEFAULT_IPV6_DOMAIN) + "]" :
-                        DEFAULT_IPV4_DOMAIN;
-
-  const string url = _scheme + "://" + domain + ":" +
-                     stringify(http.port()) + path;
-
-  VLOG(1) << "Launching " << name << " '" << url << "'"
-          << " for task '" << taskId << "'";
-
-  const vector<string> argv = {
-    HTTP_CHECK_COMMAND,
-    "-s",                 // Don't show progress meter or error messages.
-    "-S",                 // Makes curl show an error message if it fails.
-    "-L",                 // Follows HTTP 3xx redirects.
-    "-k",                 // Ignores SSL validation when scheme is https.
-    "-w", "%{http_code}", // Displays HTTP response code on stdout.
-    "-o", os::DEV_NULL,   // Ignores output.
-    "-g",                 // Switches off the "URL globbing parser".
-    url
-  };
+  const vector<string> argv = createHttpCheckCmd(http);
 
   // TODO(alexr): Consider launching the helper binary once per task lifetime,
   // see MESOS-6766.
   Try<Subprocess> s = process::subprocess(
-      HTTP_CHECK_COMMAND,
+      argv[0],
       argv,
       Subprocess::PATH(os::DEV_NULL),
       Subprocess::PIPE(),
@@ -952,6 +949,66 @@ Future<int> CheckerProcess::httpCheck()
 }
 
 
+vector<string> CheckerProcess::createHttpCheckCmd(const CheckInfo::Http& http)
+{
+  const string _scheme = scheme.isSome() ? scheme.get() : DEFAULT_HTTP_SCHEME;
+  const string path = http.has_path() ? http.path() : "";
+
+  // As per "curl --manual", the square brackets are required to tell curl that
+  // it's an IPv6 address, and we need to set "-g" option below to stop curl
+  // from interpreting the square brackets as special globbing characters.
+  const string domain = ipv6 ?
+                        "[" + string(DEFAULT_IPV6_DOMAIN) + "]" :
+                        DEFAULT_IPV4_DOMAIN;
+
+  const string url = _scheme + "://" + domain + ":" +
+                     stringify(http.port()) + path;
+
+  VLOG(1) << "Launching " << name << " '" << url << "'"
+          << " for task '" << taskId << "'";
+
+  vector<string> argv = {
+    HTTP_CHECK_COMMAND,
+    "-s",                 // Don't show progress meter or error messages.
+    "-S",                 // Makes curl show an error message if it fails.
+    "-L",                 // Follows HTTP 3xx redirects.
+    "-k",                 // Ignores SSL validation when scheme is https.
+    "-w", "%{http_code}", // Displays HTTP response code on stdout.
+    "-o", os::DEV_NULL,   // Ignores output.
+    "-g",                 // Switches off the "URL globbing parser".
+    url
+  };
+
+  if (runtime.type != ContainerRuntime::DOCKER) {
+    return argv;
+  }
+
+#ifdef __WINDOWS__
+  // On Windows, we can't directly change a process's namespace. So we
+  // need to use the network=container feature in docker to run the
+  // network health check in the right namespace.
+  argv = dockerNetworkCmd(runtime.dockerInfo);
+  vector<string> toAdd = {
+    "Invoke-WebRequest",
+    "-Uri", url,
+    "-UseBasicParsing",                     // Needed for nanoserver.
+    "-SkipCertificateCheck",                // Similar to `curl -k`.
+    "|",
+    "Out-File",                             // Write status to file.
+    "-InputObject", "{$_.StatusCode}",      // Just return status code.
+    "-Path", "$HOME\\status",
+    "-Encoding", "ASCII",                   // Avoid UTF-16 encoding.
+    "-NoNewline",
+    ";",
+    "Get-Content", "-Raw", "$HOME\\status"  // Output status code.
+  };
+  argv.insert(argv.end(), toAdd.begin(), toAdd.end());
+#endif // __WINDOWS__
+
+  return argv;
+}
+
+
 Future<int> CheckerProcess::_httpCheck(
     const tuple<Future<Option<int>>, Future<string>, Future<string>>& t)
 {
@@ -993,7 +1050,7 @@ Future<int> CheckerProcess::_httpCheck(
           << "': " << commandOutput.get();
 
   // Parse the output and get the HTTP status code.
-  Try<int> statusCode = numify<int>(commandOutput.get());
+  Try<int> statusCode = numify<int>(strings::trim(commandOutput.get()));
   if (statusCode.isError()) {
     return Failure(
         "Unexpected output from " + string(HTTP_CHECK_COMMAND) + ": " +
@@ -1044,23 +1101,12 @@ Future<bool> CheckerProcess::tcpCheck()
   CHECK(os::exists(launcherDir));
 
   const CheckInfo::Tcp& tcp = check.tcp();
-
-  VLOG(1) << "Launching " << name << " for task '" << taskId << "'"
-          << " at port " << tcp.port();
-
-  const string command = path::join(launcherDir, TCP_CHECK_COMMAND);
-  const string domain = ipv6 ? DEFAULT_IPV6_DOMAIN : DEFAULT_IPV4_DOMAIN;
-
-  const vector<string> argv = {
-    command,
-    "--ip=" + domain,
-    "--port=" + stringify(tcp.port())
-  };
+  const vector<string> argv = createTcpCheckCmd(tcp);
 
   // TODO(alexr): Consider launching the helper binary once per task lifetime,
   // see MESOS-6766.
   Try<Subprocess> s = subprocess(
-      command,
+      argv[0],
       argv,
       Subprocess::PATH(os::DEV_NULL),
       Subprocess::PIPE(),
@@ -1071,7 +1117,7 @@ Future<bool> CheckerProcess::tcpCheck()
 
   if (s.isError()) {
     return Failure(
-        "Failed to create the " + command + " subprocess: " + s.error());
+        "Failed to create the " + argv[0] + " subprocess: " + s.error());
   }
 
   // TODO(alexr): Use lambda named captures for
@@ -1105,6 +1151,45 @@ Future<bool> CheckerProcess::tcpCheck()
           string(TCP_CHECK_COMMAND) + " timed out after " + stringify(timeout));
     })
     .then(defer(self(), &Self::_tcpCheck, lambda::_1));
+}
+
+
+vector<string> CheckerProcess::createTcpCheckCmd(const CheckInfo::Tcp& tcp)
+{
+  VLOG(1) << "Launching " << name << " for task '" << taskId << "'"
+          << " at port " << tcp.port();
+
+  const string command = path::join(launcherDir, TCP_CHECK_COMMAND);
+  const string domain = ipv6 ? DEFAULT_IPV6_DOMAIN : DEFAULT_IPV4_DOMAIN;
+
+  vector<string> argv = {
+    command,
+    "--ip=" + domain,
+    "--port=" + stringify(tcp.port())
+  };
+
+  if (runtime.type != ContainerRuntime::DOCKER) {
+    return argv;
+  }
+
+#ifdef __WINDOWS__
+  // In Windows, to run a process in another container's namespace, you need
+  // to launch a new container in that container's namespace.
+  argv = dockerNetworkCmd(runtime.dockerInfo);
+
+  // Test-NetConnection doesn't exist on PowerShell Core, so we
+  // call the C# TcpClient library instead. Command looks like:
+  // (New-Object System.Net.Sockets.TcpClient(IP, PORT)).Close()
+  vector<string> toAdd = {
+    "(New-Object",
+    "System.Net.Sockets.TcpClient(\"" + domain + "\",",
+    stringify(tcp.port()) + ")).Close()"
+  };
+
+  argv.insert(argv.end(), toAdd.begin(), toAdd.end());
+#endif // __WINDOWS__
+
+  return argv;
 }
 
 
