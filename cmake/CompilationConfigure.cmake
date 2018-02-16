@@ -52,7 +52,7 @@ if (ENABLE_PRECOMPILED_HEADERS)
   set(COTIRE_VERBOSE ${VERBOSE})
 endif ()
 
-if (WIN32)
+if (CMAKE_GENERATOR MATCHES "Visual Studio")
   # In MSVC 1900, there are two bugs in the linker, one that causes linking
   # libmesos to occasionally take hours, and one that causes us to be able to
   # fail to open the `mesos-x.lib` file. These have been confirmed as bugs with
@@ -192,7 +192,7 @@ if (WIN32)
   if (NOT CMAKE_GENERATOR MATCHES ${PREFERRED_GENERATOR})
     message(
       WARNING
-      "Mesos is deprecating support for ${CMAKE_GENERATOR}. "
+      "Mesos does not officially support ${CMAKE_GENERATOR}. "
       "Please use ${PREFERRED_GENERATOR}.")
   endif ()
 
