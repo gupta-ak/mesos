@@ -759,6 +759,135 @@ TEST_F(HealthCheckTest, HealthyTaskNonShell)
 }
 
 
+// This test verifies that tasks with quotes in the `COMMAND` health check
+// work for the Docker executor.
+TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTaskWithQuotedCommand)
+{
+  Shared<Docker> docker(new MockDocker(
+      tests::flags.docker, tests::flags.docker_socket));
+
+  Try<Nothing> validateResult = docker->validateVersion(Version(1, 3, 0));
+  ASSERT_SOME(validateResult)
+    << "-------------------------------------------------------------\n"
+    << "We cannot run this test because of 'docker exec' command \n"
+    << "require docker version greater than '1.3.0'. You won't be \n"
+    << "able to use the docker exec method, but feel free to disable\n"
+    << "this test.\n"
+    << "-------------------------------------------------------------";
+
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  slave::Flags agentFlags = CreateSlaveFlags();
+
+  Fetcher fetcher(agentFlags);
+
+  Try<ContainerLogger*> logger =
+    ContainerLogger::create(agentFlags.container_logger);
+
+  ASSERT_SOME(logger);
+
+  MockDockerContainerizer containerizer(
+      agentFlags,
+      &fetcher,
+      Owned<ContainerLogger>(logger.get()),
+      docker);
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+  Try<Owned<cluster::Slave>> agent =
+    StartSlave(detector.get(), &containerizer, agentFlags);
+  ASSERT_SOME(agent);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+    &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
+  Future<vector<Offer>> offers;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
+
+  driver.start();
+
+  AWAIT_READY(offers);
+  ASSERT_FALSE(offers->empty());
+
+  ContainerInfo containerInfo;
+  containerInfo.set_type(ContainerInfo::DOCKER);
+
+  // TODO(tnachen): Use local image to test if possible.
+  ContainerInfo::DockerInfo dockerInfo;
+  dockerInfo.set_image(DOCKER_TEST_IMAGE);
+  containerInfo.mutable_docker()->CopyFrom(dockerInfo);
+
+  vector<TaskInfo> tasks = populateTasks(
+      DOCKER_SLEEP_CMD(120),
+      "echo \"Hello World!\"",
+      offers.get()[0],
+      0,
+      None(),
+      None(),
+      containerInfo);
+
+  Future<ContainerID> containerId;
+  EXPECT_CALL(containerizer, launch(_, _, _, _))
+    .WillOnce(DoAll(FutureArg<0>(&containerId),
+                    Invoke(&containerizer,
+                           &MockDockerContainerizer::_launch)));
+
+  Future<TaskStatus> statusStarting;
+  Future<TaskStatus> statusRunning;
+  Future<TaskStatus> statusHealthy;
+
+  EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusStarting))
+    .WillOnce(FutureArg<1>(&statusRunning))
+    .WillOnce(FutureArg<1>(&statusHealthy));
+
+  driver.launchTasks(offers.get()[0].id(), tasks);
+
+  AWAIT_READY(containerId);
+
+  AWAIT_READY(statusStarting);
+  EXPECT_EQ(TASK_STARTING, statusStarting->state());
+
+  AWAIT_READY(statusRunning);
+  EXPECT_EQ(TASK_RUNNING, statusRunning->state());
+
+  AWAIT_READY(statusHealthy);
+  EXPECT_EQ(TASK_RUNNING, statusHealthy->state());
+  EXPECT_EQ(
+      TaskStatus::REASON_TASK_HEALTH_CHECK_STATUS_UPDATED,
+      statusHealthy->reason());
+  EXPECT_TRUE(statusHealthy->has_healthy());
+  EXPECT_TRUE(statusHealthy->healthy());
+
+  Future<Option<ContainerTermination>> termination =
+    containerizer.wait(containerId.get());
+
+  driver.stop();
+  driver.join();
+
+  AWAIT_READY(termination);
+  EXPECT_SOME(termination.get());
+
+  agent.get()->terminate();
+  agent->reset();
+
+  Future<std::list<Docker::Container>> containers =
+    docker->ps(true, slave::DOCKER_NAME_PREFIX);
+
+  AWAIT_READY(containers);
+
+  // Cleanup all mesos launched containers.
+  foreach (const Docker::Container& container, containers.get()) {
+    AWAIT_READY_FOR(docker->rm(container.id, true), Seconds(30));
+  }
+}
+
+
 // This test creates a task whose health flaps, and verifies that the
 // health status updates are sent to the framework scheduler.
 TEST_F(HealthCheckTest, HealthStatusChange)
