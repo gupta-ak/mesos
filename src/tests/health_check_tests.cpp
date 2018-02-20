@@ -819,12 +819,13 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthyTaskWithQuotedCommand)
 
   // TODO(tnachen): Use local image to test if possible.
   ContainerInfo::DockerInfo dockerInfo;
-  dockerInfo.set_image(DOCKER_TEST_IMAGE);
+  // dockerInfo.set_image("nginx");
+  dockerInfo.set_image("alpine");
   containerInfo.mutable_docker()->CopyFrom(dockerInfo);
 
   vector<TaskInfo> tasks = populateTasks(
-      DOCKER_SLEEP_CMD(120),
-      "echo \"Hello World!\"",
+      "sleep 120",
+      "echo '\"'",
       offers.get()[0],
       0,
       None(),

@@ -686,9 +686,7 @@ private:
       if (command.shell()) {
         commandArguments.push_back("sh");
         commandArguments.push_back("-c");
-        commandArguments.push_back("\"");
         commandArguments.push_back(command.value());
-        commandArguments.push_back("\"");
       } else {
         commandArguments.push_back(command.value());
 
@@ -697,10 +695,12 @@ private:
         }
       }
 
-      healthCheck.mutable_command()->set_shell(true);
+      healthCheck.mutable_command()->set_shell(false);
+      healthCheck.mutable_command()->set_value(commandArguments[0]);
       healthCheck.mutable_command()->clear_arguments();
-      healthCheck.mutable_command()->set_value(
-          strings::join(" ", commandArguments));
+      foreach (const string& argument, commandArguments) {
+        healthCheck.mutable_command()->add_arguments(argument);
+      }
     }
 
     vector<string> namespaces;
