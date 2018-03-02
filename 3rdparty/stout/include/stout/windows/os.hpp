@@ -907,6 +907,39 @@ inline Try<Nothing> assign_job(SharedHandle job_handle, pid_t pid) {
 }
 
 
+// `is_process_in_job` wraps the Windows system call `IsProcessInJob`. It checks
+// if the the process `pid` is in the job object `job_handle` or in any job
+// object if `job_handle` is `None`.
+inline Try<bool> is_process_in_job(Option<SharedHandle> job_handle, pid_t pid)
+{
+  const SharedHandle process_handle(
+    ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid),
+    ::CloseHandle);
+
+  if (process_handle.get_handle() == nullptr) {
+    return WindowsError("os::is_process_in_job: Call to `OpenProcess` failed");
+  }
+
+  HANDLE raw_job_handle = nullptr;
+  if (job_handle.isSome()) {
+    raw_job_handle = job_handle->get_handle();
+  }
+
+  BOOL in_job;
+  const BOOL result = ::IsProcessInJob(
+    process_handle.get_handle(),
+    raw_job_handle,
+    &in_job);
+
+  if (result == FALSE) {
+    return WindowsError(
+        "os::is_process_in_job: Call to `IsProcessInJob` failed");
+  }
+
+  return in_job;
+}
+
+
 // The `kill_job` function wraps the Windows sytem call `TerminateJobObject`
 // for the job object `job_handle`. This will call `TerminateProcess`
 // for every associated child process.
