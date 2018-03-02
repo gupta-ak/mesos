@@ -21,18 +21,15 @@
 #include <stout/try.hpp>      // For `Try<>`.
 #include <stout/windows.hpp>  // For `SharedHandle`.
 
+#include <stout/os/kill.hpp> // For `os::kill`
+
+#include <stout/windows/error.hpp> // For `WindowsError`
+
 namespace os {
 
-// Terminate the "process tree" rooted at the specified pid.
-// Since there is no process tree concept on Windows,
-// internally this function looks up the job object for the given pid
-// and terminates the job. This is possible because `name_job`
-// provides an idempotent one-to-one mapping from pid to name.
-inline Try<std::list<ProcessTree>> killtree(
-    pid_t pid,
-    int signal,
-    bool groups = false,
-    bool sessions = false)
+namespace internal {
+
+inline Try<Nothing> kill_job_tree(pid_t pid)
 {
   Try<std::wstring> name = os::name_job(pid);
   if (name.isError()) {
@@ -48,6 +45,47 @@ inline Try<std::list<ProcessTree>> killtree(
   Try<Nothing> killJobResult = os::kill_job(handle.get());
   if (killJobResult.isError()) {
     return Error("Failed to delete job object: " + killJobResult.error());
+  }
+
+  return Nothing();
+}
+
+} // namespace internal {
+
+
+// Terminate the "process tree" rooted at the specified pid.
+// Since there is no process tree concept on Windows,
+// internally this function handles two cases:
+//  - If the process is not in a job object, this function just kills the
+//    process like `os::kill`.
+//  - If the process is in a job object, then we have strong parent-child
+//    a relationship, so we can kill the process tree. This function looks
+//    up the job object for the given pid and terminates the job. This is
+//    possible because `name_job` provides an idempotent one-to-one mapping
+//    from pid to name.
+inline Try<std::list<ProcessTree>> killtree(
+    pid_t pid,
+    int signal,
+    bool groups = false,
+    bool sessions = false)
+{
+  const Try<bool> in_job = os::is_process_in_job(None(), pid);
+  if (in_job.isError()) {
+    return Error(
+        "Failed to determine if process is in job: " + in_job.error());
+  }
+
+  if (in_job.get()) {
+    const Try<Nothing> result = os::internal::kill_job_tree(pid);
+    if (result.isError()) {
+      return Error("Failed to delete job object tree: " + result.error());
+    }
+  } else {
+    const int result = os::kill(pid, SIGKILL);
+    if (result != KILL_PASS) {
+      // `os::kill` will call `TerminateProcess` so we can get that error.
+      return WindowsError("Failed to kill process");
+    }
   }
 
   // NOTE: This return value is unused. A future refactor
