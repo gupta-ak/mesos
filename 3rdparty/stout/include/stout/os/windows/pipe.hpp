@@ -14,9 +14,11 @@
 #define __STOUT_OS_WINDOWS_PIPE_HPP__
 
 #include <array>
+#include <string>
 
 #include <stout/error.hpp>
 #include <stout/try.hpp>
+#include <stout/uuid.hpp>
 
 namespace os {
 
@@ -25,23 +27,45 @@ namespace os {
 // in file descriptors, a process-local concept.
 inline Try<std::array<WindowsFD, 2>> pipe()
 {
-  // Create inheritable pipe, as described in MSDN[1].
-  //
-  // [1] https://msdn.microsoft.com/en-us/library/windows/desktop/aa365782(v=vs.85).aspx
-  SECURITY_ATTRIBUTES securityAttr;
-  securityAttr.nLength = sizeof(SECURITY_ATTRIBUTES);
-  securityAttr.bInheritHandle = TRUE;
-  securityAttr.lpSecurityDescriptor = nullptr;
+  // TODO: maybe call the windows RPC server for this?
+  std::wstring uuid = wide_stringify(id::UUID::random().toString());
+  std::wstring pipe_name = L"\\\\.\\pipe\\mesos-pipe-" + uuid;
 
-  HANDLE read_handle;
-  HANDLE write_handle;
+  DWORD pipe_flags =
+    PIPE_ACCESS_INBOUND |
+    FILE_FLAG_FIRST_PIPE_INSTANCE |
+    FILE_FLAG_OVERLAPPED;
 
-  const BOOL result =
-    ::CreatePipe(&read_handle, &write_handle, &securityAttr, 0);
+  HANDLE read_handle =
+    ::CreateNamedPipeW(
+        pipe_name.c_str(),
+        pipe_flags,
+        PIPE_TYPE_BYTE | PIPE_WAIT,
+        1,
+        0,
+        0,
+        0,
+        NULL);
 
-  if (!result) {
-    return WindowsError();
-  }
+	if (read_handle == INVALID_HANDLE_VALUE) {
+		return WindowsError();
+	}
+
+	HANDLE write_handle = 
+    ::CreateFileW(
+        pipe_name.c_str(),
+        GENERIC_WRITE,
+        0,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, 
+        NULL);
+
+	if (write_handle == INVALID_HANDLE_VALUE) {
+    DWORD error = GetLastError();
+		CloseHandle(read_handle);
+    return WindowsError(error);
+	}
 
   return std::array<WindowsFD, 2>{read_handle, write_handle};
 }
