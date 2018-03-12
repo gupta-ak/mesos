@@ -181,6 +181,7 @@ Future<size_t> PollSocketImpl::send(const char* data, size_t size)
   // doesn't end up getting reused before we return.
   auto self = shared(this);
 
+#ifndef __WINDOWS__
   // TODO(benh): Reuse `io::write`? Or is `net::send` and
   // `MSG_NOSIGNAL` critical here?
   return loop(
@@ -223,6 +224,12 @@ Future<size_t> PollSocketImpl::send(const char* data, size_t size)
         }
         return Break(length.get());
       });
+#endif // __WINDOWS__
+
+  return io::write(get(), data, size)
+    .then([self](size_t length) {
+      return length;
+    });
 }
 
 
