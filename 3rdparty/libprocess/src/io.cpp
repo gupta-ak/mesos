@@ -24,11 +24,16 @@
 #include <stout/nothing.hpp>
 #include <stout/os.hpp>
 #include <stout/try.hpp>
+#include <stout/windows.hpp>
 
 #include <stout/os/constants.hpp>
 #include <stout/os/read.hpp>
 #include <stout/os/strerror.hpp>
 #include <stout/os/write.hpp>
+
+#ifdef __WINDOWS__
+#include "eventloop_iocp.hpp"
+#endif // __WINDOWS__
 
 using std::string;
 using std::vector;
@@ -37,6 +42,7 @@ namespace process {
 namespace io {
 namespace internal {
 
+#ifndef __WINDOWS__
 Future<size_t> read(int_fd fd, void* data, size_t size)
 {
   // TODO(benh): Let the system calls do what ever they're supposed to
@@ -129,6 +135,78 @@ Future<size_t> write(int_fd fd, const void* data, size_t size)
         return Break(length.get());
       });
 }
+
+#else
+struct Overlapped {
+  process::Overlapped overlapped;
+  Promise<size_t> promise;
+};
+
+void iocallback(OVERLAPPED* overlapped, DWORD bytesRead) {
+  Overlapped* o = reinterpret_cast<Overlapped*>(overlapped);
+  if (o->promise.future().hasDiscard()) {
+    o->promise.discard();
+  } else if (o->overlapped.overlapped.Internal != 0) {
+    // Interal stores the error code.
+    o->promise.fail("IOCP failed with error code " +
+                       stringify(o->overlapped.overlapped.Internal));
+  } else {
+    o->promise.set(bytesRead);
+  }
+
+  delete o;
+}
+
+void cancelIocp(int_fd fd, Overlapped* o) {
+  ::CancelIoEx(fd,  reinterpret_cast<OVERLAPPED*>(o));
+}
+
+Future<size_t> read(int_fd fd, void* data, size_t size)
+{
+  if (size == 0) {
+    return 0;
+  }
+
+  // Assume that the file is overlapped for now.
+  Overlapped* o = new Overlapped();
+  o->overlapped.overlapped = {0};
+  o->overlapped.callback = &iocallback;
+
+  BOOL success = ::ReadFile(fd, data, size, NULL, reinterpret_cast<OVERLAPPED*>(o));
+  if (!success && GetLastError() != ERROR_IO_PENDING) {
+    return Failure(WindowsError());
+  }
+  
+  // Otherwise, the operation either completed already (success == TRUE)
+  // or it's queued in the IOCP (success == ERROR_IO_PENDING). In either
+  // case, we let the IOCP thread handle the future.
+  return o->promise.future()
+    .onDiscard(lambda::bind(&cancelIocp, fd, o));
+}
+
+Future<size_t> write(int_fd fd, const void* data, size_t size)
+{
+  if (size == 0) {
+    return 0;
+  }
+
+  // Assume that the file is overlapped for now.
+  Overlapped* o = new Overlapped();
+  o->overlapped.overlapped = {0};
+  o->overlapped.callback = &process::io::internal::iocallback;
+
+  BOOL success = ::WriteFile(fd, data, size, NULL, reinterpret_cast<OVERLAPPED*>(o));
+  if (!success && GetLastError() != ERROR_IO_PENDING) {
+    return Failure(WindowsError());
+  }
+
+  // Otherwise, the operation either completed already (success == TRUE)
+  // or it's queued in the IOCP (success == ERROR_IO_PENDING). In either
+  // case, we let the IOCP thread handle the future.
+  return o->promise.future()
+    .onDiscard(lambda::bind(&cancelIocp, fd, o));
+}
+#endif // __WINDOWS__
 
 } // namespace internal {
 
@@ -238,6 +316,7 @@ Future<string> read(int_fd fd)
   }
 
   // Make the file descriptor non-blocking.
+#ifndef __WINDOWS__
   Try<Nothing> nonblock = os::nonblock(fd);
   if (nonblock.isError()) {
     os::close(fd);
@@ -245,6 +324,15 @@ Future<string> read(int_fd fd)
         "Failed to make duplicated file descriptor non-blocking: " +
         nonblock.error());
   }
+#else
+  // Associate with IOCP port
+  if (::CreateIoCompletionPort(fd, IocpHandle, 1, 1) == nullptr) {
+    os::close(fd);
+    return Failure("Failed to create IOCP association: " +
+                   stringify(::GetLastError()));
+  }
+#endif // __WINDOWS__
+
 
   // TODO(benh): Wrap up this data as a struct, use 'Owner'.
   // TODO(bmahler): For efficiency, use a rope for the buffer.
@@ -298,6 +386,7 @@ Future<Nothing> write(int_fd fd, const string& data)
         cloexec.error());
   }
 
+#ifndef __WINDOWS__
   // Make the file descriptor non-blocking.
   Try<Nothing> nonblock = os::nonblock(fd);
   if (nonblock.isError()) {
@@ -306,6 +395,14 @@ Future<Nothing> write(int_fd fd, const string& data)
         "Failed to make duplicated file descriptor non-blocking: " +
         nonblock.error());
   }
+#else
+  // Associate with IOCP port
+  if (::CreateIoCompletionPort(fd, IocpHandle, 1, 1) == nullptr) {
+    os::close(fd);
+    return Failure("Failed to create IOCP association: " +
+                   stringify(::GetLastError()));
+  }
+#endif // __WINDOWS__
 
   // We store `data.size()` so that we can just use `size` in the
   // second lambda below versus having to make a copy of `data` in
@@ -390,6 +487,7 @@ Future<Nothing> redirect(
   }
 
   // Make the file descriptors non-blocking (no-op if already set).
+#ifndef __WINDOWS__
   Try<Nothing> nonblock = os::nonblock(from);
   if (nonblock.isError()) {
     os::close(from);
@@ -403,6 +501,23 @@ Future<Nothing> redirect(
     os::close(to.get());
     return Failure("Failed to make 'to' non-blocking: " + nonblock.error());
   }
+#else
+  // Associate with IOCP port
+  if (::CreateIoCompletionPort(from, IocpHandle, 1, 1) == nullptr) {
+    os::close(from);
+    os::close(to.get());
+    return Failure("Failed to create IOCP association: " +
+                   stringify(::GetLastError()));
+  }
+
+  if (::CreateIoCompletionPort(to.get(), IocpHandle, 1, 1) == nullptr) {
+    os::close(from);
+    os::close(to.get());
+    return Failure("Failed to create IOCP association: " +
+                   stringify(::GetLastError()));
+  }
+
+#endif // __WINDOWS__
 
   // NOTE: We wrap `os::close` in a lambda to disambiguate on Windows.
   return internal::splice(from, to.get(), chunk, hooks)
