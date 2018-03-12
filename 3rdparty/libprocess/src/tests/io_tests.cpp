@@ -20,10 +20,15 @@
 
 #include <stout/gtest.hpp>
 #include <stout/os.hpp>
+#include <stout/windows.hpp>
+
+#include <stout/os/pipe.hpp>
+#include <stout/os/write.hpp>
 
 #include <stout/tests/utils.hpp>
 
 #include "encoder.hpp"
+#include "eventloop_iocp.hpp"
 
 namespace io = process::io;
 
@@ -33,6 +38,7 @@ using std::string;
 
 class IOTest: public TemporaryDirectoryTest {};
 
+#ifndef __WINDOWS__
 TEST_F(IOTest, Poll)
 {
   int pipes[2];
@@ -53,13 +59,14 @@ TEST_F(IOTest, Poll)
   ASSERT_SOME(os::close(pipes[0]));
   ASSERT_SOME(os::close(pipes[1]));
 }
-
+#endif
 
 TEST_F(IOTest, Read)
 {
-  int pipes[2];
+  int_fd pipes[2];
   char data[3];
 
+#ifndef __WINDOWS__
   // Create a blocking pipe.
   ASSERT_NE(-1, ::pipe(pipes));
 
@@ -71,45 +78,73 @@ TEST_F(IOTest, Read)
 
   // Test on a closed file descriptor.
   AWAIT_EXPECT_FAILED(io::read(pipes[0], data, 3));
+#endif
 
   // Create a nonblocking pipe.
-  ASSERT_NE(-1, ::pipe(pipes));
+  Try<std::array<int_fd, 2>> s = os::pipe();
+  if (s.isError()) {
+    LOG(INFO) << "os::pipe failed with " << s.error();
+  } 
+
+  pipes[0] = s.get()[0];
+  pipes[1] = s.get()[1];
+
+  LOG(INFO) << "data: " << process::IocpHandle << " " << (HANDLE) s.get()[0] << " " << (HANDLE) s.get()[1];
+
+  ASSERT_SOME(s);
+#ifndef __WINDOWS__
   ASSERT_SOME(os::nonblock(pipes[0]));
   ASSERT_SOME(os::nonblock(pipes[1]));
+#else
+  if (::CreateIoCompletionPort(pipes[0], process::IocpHandle, 1, 1) == NULL) {
+    LOG(INFO) << "Failed to associate port0 " << GetLastError();
+  }
+    if (::CreateIoCompletionPort(pipes[1], process::IocpHandle, 1, 1) == NULL) {
+    LOG(INFO) << "Failed to associate port1 " << GetLastError();
+  }
+#endif // __WINDOWS__
 
   // Test reading nothing.
+  LOG(INFO) << "test nothing";
   AWAIT_EXPECT_EQ(0u, io::read(pipes[0], data, 0));
 
   // Test discarded read.
+  LOG(INFO) << "test discard";
   Future<size_t> future = io::read(pipes[0], data, 3);
   EXPECT_TRUE(future.isPending());
   future.discard();
   AWAIT_DISCARDED(future);
 
   // Test successful read.
+  LOG(INFO) << "test success read";
   future = io::read(pipes[0], data, 3);
   ASSERT_FALSE(future.isReady());
 
-  ASSERT_EQ(2, write(pipes[1], "hi", 2));
+  LOG(INFO) << "test write1";
+  ASSERT_EQ(2, os::signal_safe::write_impl(pipes[1], "hi", 2));
 
   AWAIT_ASSERT_EQ(2u, future);
   EXPECT_EQ('h', data[0]);
   EXPECT_EQ('i', data[1]);
 
   // Test cancellation.
+  LOG(INFO) << "test cancel";
   future = io::read(pipes[0], data, 1);
   ASSERT_FALSE(future.isReady());
 
   future.discard();
 
-  ASSERT_EQ(3, write(pipes[1], "omg", 3));
+  LOG(INFO) << "test write2";
+  ASSERT_EQ(3, os::signal_safe::write_impl(pipes[1], "omg", 3));
 
+  LOG(INFO) << "test read2";
   AWAIT_ASSERT_EQ(3u, io::read(pipes[0], data, 3)) << string(data, 2);
   EXPECT_EQ('o', data[0]);
   EXPECT_EQ('m', data[1]);
   EXPECT_EQ('g', data[2]);
 
   // Test read EOF.
+  LOG(INFO) << "test eof";
   future = io::read(pipes[0], data, 3);
   ASSERT_FALSE(future.isReady());
 
@@ -121,6 +156,7 @@ TEST_F(IOTest, Read)
 }
 
 
+#ifndef __WINDOWS__
 TEST_F(IOTest, BufferedRead)
 {
   // 128 Bytes.
@@ -364,3 +400,4 @@ TEST_F(IOTest, Redirect)
   // accumulated in the redirect hook.
   EXPECT_EQ(data, accumulated);
 }
+#endif // __WINDOWS__

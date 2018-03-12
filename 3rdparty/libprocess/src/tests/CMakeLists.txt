@@ -41,11 +41,11 @@ set(PROCESS_TESTS_SRC
   subprocess_tests.cpp
   system_tests.cpp
   time_tests.cpp
-  timeseries_tests.cpp)
+  timeseries_tests.cpp
+  io_tests.cpp)
 
 if (NOT WIN32)
   list(APPEND PROCESS_TESTS_SRC
-    io_tests.cpp
     reap_tests.cpp)
 endif ()
 
