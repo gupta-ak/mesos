@@ -61,13 +61,14 @@ inline Try<Nothing> nonblock(const WindowsFD& fd)
       break;
     }
     case WindowsFD::FD_SOCKET: {
+      /*
       const u_long non_block_mode = 1;
       u_long mode = non_block_mode;
 
       int result = ::ioctlsocket(fd, FIONBIO, &mode);
       if (result != NO_ERROR) {
         return WindowsSocketError();
-      }
+      }*/
       break;
     }
   }
