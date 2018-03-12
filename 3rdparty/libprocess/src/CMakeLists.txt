@@ -63,7 +63,9 @@ set(PROCESS_SRC
 
 if (WIN32)
   list(APPEND PROCESS_SRC
-    subprocess_windows.cpp)
+    subprocess_windows.cpp
+    eventloop_iocp.hpp
+    eventloop_iocp.cpp)
 else ()
   list(APPEND PROCESS_SRC
     subprocess_posix.cpp)

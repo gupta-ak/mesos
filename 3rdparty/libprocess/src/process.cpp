@@ -120,6 +120,10 @@
 #include "socket_manager.hpp"
 #include "run_queue.hpp"
 
+#ifdef __WINDOWS__
+#include "eventloop_iocp.hpp"
+#endif // __WINDOWS__
+
 namespace inet = process::network::inet;
 namespace inet4 = process::network::inet4;
 namespace inet6 = process::network::inet6;
@@ -1057,6 +1061,11 @@ bool initialize(
 
   // Initialize the event loop.
   EventLoop::initialize();
+
+  // Intialize the IOCP loop
+#ifdef __WINDOWS__
+  IocpLoop::initialize();
+#endif // __WINDOWS__
 
   // Setup processing threads.
   long num_worker_threads = process_manager->init_threads();
@@ -2418,6 +2427,7 @@ void ProcessManager::finalize()
   joining_threads.store(true);
   runq.decomission();
   EventLoop::stop();
+  IocpLoop::stop();
 
   // Join all threads.
   foreach (std::thread* thread, threads) {
@@ -2474,7 +2484,7 @@ long ProcessManager::init_threads()
                        << runq.capacity() << " at this time";
   }
 
-  threads.reserve(num_worker_threads + 1);
+  threads.reserve(num_worker_threads + 2);
 
   // Create processing threads.
   for (long i = 0; i < num_worker_threads; i++) {
@@ -2503,6 +2513,9 @@ long ProcessManager::init_threads()
 
   // Create a thread for the event loop.
   threads.emplace_back(new std::thread(&EventLoop::run));
+
+  // Create iocp loop
+  threads.emplace_back(new std::thread(&IocpLoop::run));
 
   return num_worker_threads;
 }
