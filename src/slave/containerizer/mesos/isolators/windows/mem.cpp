@@ -24,11 +24,14 @@
 #include <stout/duration.hpp>
 #include <stout/hashset.hpp>
 #include <stout/nothing.hpp>
+#include <stout/os.hpp>
 #include <stout/stringify.hpp>
 #include <stout/try.hpp>
 #include <stout/windows.hpp>
 
-#include <stout/windows/os.hpp>
+#ifdef __WINDOWS__
+#include <stout/os/windows/jobobject.hpp>
+#endif // __WINDOWS__
 
 #include "slave/flags.hpp"
 
