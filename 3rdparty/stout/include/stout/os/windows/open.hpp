@@ -16,38 +16,98 @@
 #include <string>
 
 #include <stout/error.hpp>
-#include <stout/nothing.hpp>
 #include <stout/try.hpp>
-#include <stout/windows.hpp>  // For `mode_t`.
+#include <stout/windows.hpp> // For `mode_t`.
 
-#include <stout/os/close.hpp>
-#include <stout/os/fcntl.hpp> // For `oflag` values.
 #include <stout/os/int_fd.hpp>
 
 #include <stout/internal/windows/longpath.hpp>
 
-#ifndef O_CLOEXEC
-#error "missing O_CLOEXEC support on this platform"
-// NOTE: On Windows, `fnctl.hpp` defines `O_CLOEXEC` to a no-op.
-#endif
+// TODO(andschwa): Windows does not support the Linux extension
+// O_NONBLOCK, as asynchronous I/O is done through other mechanisms.
+// Overlapped I/O will be implemented later.
+constexpr int O_NONBLOCK = 0;
+
+// Windows does not support the Linux extension O_SYNC, as buffering
+// is done differently.
+constexpr int O_SYNC = 0;
+
+// Windows does not support the Linux extension O_CLOEXEC. Instead, by
+// default we set all handles to be non-inheritable.
+constexpr int O_CLOEXEC = 0;
 
 namespace os {
 
+// TODO(andschwa): Handle specified creation permissions in `mode_t mode`.
 inline Try<int_fd> open(const std::string& path, int oflag, mode_t mode = 0)
 {
   std::wstring longpath = ::internal::windows::longpath(path);
-  // By default, Windows will perform "text translation" meaning that it will
-  // automatically write CR/LF instead of LF line feeds. To prevent this, and
-  // use the POSIX semantics, we open with `O_BINARY`.
+
+  // Map the POSIX `oflag` access flags.
+
+  // O_APPEND: Write only appends.
   //
-  // Also by default, we will mimic the Windows (non-CRT) APIs and make all
-  // opened handles non-inheritable.
-  int_fd fd = ::_wopen(longpath.data(), oflag | O_BINARY | O_NOINHERIT, mode);
-  if (fd < 0) {
-    return ErrnoError();
+  // NOTE: We choose a `write` flag here because emulating `O_APPEND`
+  // requires granting the `FILE_APPEND_DATA` access right, but not
+  // the `FILE_WRITE_DATA` access right, which `GENERIC_WRITE` would
+  // otherwise grant.
+  const DWORD write = (oflag & O_APPEND) ? FILE_APPEND_DATA : GENERIC_WRITE;
+
+  DWORD access;
+  if (oflag & O_WRONLY) {
+    access = write;
+  } else if (oflag & O_RDWR) {
+    access = GENERIC_READ | write;
+  } else {
+    // NOTE: `O_RDONLY` is zero, so it is "always" set and therefore
+    // cannot be reliably tested using a bitmask. Thus it's the default.
+    access = GENERIC_READ;
   }
 
-  return fd;
+  // Map the POSIX `oflag` creation flags.
+  DWORD create;
+  if (oflag & O_CREAT) { // Create file if it doesn't exist.
+    // Fail if file already exists. This is undefined without `O_CREAT`.
+    if (oflag & O_EXCL) {
+      create = CREATE_NEW;
+    }
+    // Truncate file if it already exists.
+    else if (oflag & O_TRUNC) {
+      create = CREATE_ALWAYS;
+    }
+    // Otherwise, create a new file or open an existing file.
+    else {
+      create = OPEN_ALWAYS;
+    }
+  } else { // Only open existing files.
+    // Truncate file if it exists, otherwise fail.
+    if (oflag & O_TRUNC) {
+      create = TRUNCATE_EXISTING;
+    }
+    // Open file if it exists, otherwise fail.
+    else {
+      create = OPEN_EXISTING;
+    }
+  }
+
+  const HANDLE handle = ::CreateFileW(
+      longpath.data(),
+      access,
+      // Share all access so we don't lock the file.
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      // Disable inheritance by default.
+      nullptr,
+      create,
+      FILE_ATTRIBUTE_NORMAL,
+      // No template file.
+      nullptr);
+
+  if (handle == INVALID_HANDLE_VALUE) {
+    return WindowsError();
+  }
+
+  // Return an int-like abstraction of the `HANDLE`.
+  return int_fd(handle);
 }
 
 } // namespace os {
