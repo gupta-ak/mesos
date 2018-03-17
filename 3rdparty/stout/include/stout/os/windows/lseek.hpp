@@ -13,10 +13,9 @@
 #ifndef __STOUT_OS_WINDOWS_LSEEK_HPP__
 #define __STOUT_OS_WINDOWS_LSEEK_HPP__
 
-#include <io.h>
-
 #include <stout/error.hpp>
 #include <stout/try.hpp>
+#include <stout/windows.hpp>
 
 #include <stout/os/int_fd.hpp>
 
@@ -24,11 +23,28 @@ namespace os {
 
 inline Try<off_t> lseek(int_fd fd, off_t offset, int whence)
 {
-  off_t result = ::_lseek(fd.crt(), offset, whence);
-  if (result < 0) {
-    return ErrnoError();
+  DWORD move;
+  if (whence == SEEK_SET) { move = FILE_BEGIN; }
+  else if (whence == SEEK_CUR) { move = FILE_CURRENT; }
+  else if (whence == SEEK_END) { move = FILE_END; }
+  // TODO(andschwa): Maybe we want to support the Windows flags here
+  // in addition to the POSIX flags instead of erroring.
+  else { return Error("`whence` did not make sense."); }
+
+  // TODO(andschwa): This may need to be synchronized if users aren't
+  // careful about sharing their file handles among threads.
+  //
+  // TODO(andschwa): This may need to check if `offset` would overflow
+  // 32 signed bits, in which case we need to split its value across
+  // two arguments, which combined represent the 64-bit offset.
+  const DWORD result =
+    ::SetFilePointer(fd, static_cast<LONG>(offset), nullptr, move);
+
+  if (result == INVALID_SET_FILE_POINTER) {
+    return WindowsError();
   }
-  return result;
+
+  return static_cast<off_t>(result);
 }
 
 } // namespace os {
