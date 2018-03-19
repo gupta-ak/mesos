@@ -13,24 +13,29 @@
 #ifndef __STOUT_OS_WINDOWS_FTRUNCATE_HPP__
 #define __STOUT_OS_WINDOWS_FTRUNCATE_HPP__
 
-#include <io.h>
-
 #include <stout/error.hpp>
 #include <stout/nothing.hpp>
-#include <stout/stringify.hpp>
 #include <stout/try.hpp>
+#include <stout/windows.hpp>
 
 #include <stout/os/int_fd.hpp>
 
 namespace os {
 
-// Identical in functionality to POSIX standard `ftruncate`.
-inline Try<Nothing> ftruncate(const int_fd& fd, __int64 length)
+inline Try<Nothing> ftruncate(const int_fd& fd, off_t length)
 {
-  if (::_chsize_s(fd.crt(), length) != 0) {
-    return ErrnoError(
-      "Failed to truncate file at file descriptor '" + stringify(fd) + "' to " +
-      stringify(length) + " bytes.");
+  // Seeking to `length` and then setting the end of the file is
+  // semantically equivalent to `ftruncate`.
+  const Try<off_t> result = os::lseek(fd, length, SEEK_SET);
+  if (result.isError()) {
+    return Error(result.error());
+  }
+
+  // TODO(andschwa): `ftruncate` will write null bytes to extend the
+  // file, while `SetEndOfFile` leaves them uninitialized. Perhaps we
+  // want to explicitly write null bytes too.
+  if (::SetEndOfFile(fd) == FALSE) {
+    return WindowsError();
   }
 
   return Nothing();
