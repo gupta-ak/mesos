@@ -208,6 +208,96 @@ inline std::wstring stringify_args(const std::vector<std::string>& argv)
   return command;
 }
 
+// A wrapper around Window's `LPPROC_THREAD_ATTRIBUTE_LIST`[1] struct that
+// abstracts the annoying memory management for it.
+//
+// [1] https://msdn.microsoft.com/en-us/library/windows/desktop/ms683481(v=vs.85).aspx // NOLINT(whitespace/line_length)
+class ProcThreadAttributeList
+{
+public:
+  ProcThreadAttributeList() : attribute_list(nullptr), initialized(false) {}
+
+  ~ProcThreadAttributeList()
+  {
+    if (attribute_list == nullptr) {
+      return;
+    }
+
+    if (initialized) {
+      DeleteProcThreadAttributeList(attribute_list);
+    }
+
+    HeapFree(GetProcessHeap(), 0, attribute_list);
+  }
+
+  // Disable copying, because we can't deep copy `LPPROC_THREAD_ATTRIBUTE_LIST`.
+  ProcThreadAttributeList(const ProcThreadAttributeList&) = delete;
+  ProcThreadAttributeList& operator=(const ProcThreadAttributeList&) = delete;
+
+  // Right now, we just hardcode a signle attribute (the inherited handles),
+  // because the other attributes don't seem useful.
+  Try<Nothing> init_attribute_list(std::vector<HANDLE> handles)
+  {
+    if (attribute_list != nullptr) {
+      return Error("`init_attribute_list` can only be called once");
+    }
+
+    SIZE_T size = 0;
+
+    // First, we call `::InitializeProcThreadAttributeList` with `nullptr` to
+    // get the size that we need to allocate.
+    BOOL result = ::InitializeProcThreadAttributeList(nullptr, 1, 0, &size);
+    if (!result) {
+      // The default constructor will call `::GetLastError`.
+      const WindowsError err;
+      if (err.code != ERROR_INSUFFICIENT_BUFFER) {
+        return err;
+      }
+    }
+
+    // Now, we know the amount of memory to allocate.
+    attribute_list =
+      reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>
+      (HeapAlloc(GetProcessHeap(), 0, size));
+
+    if (attribute_list == nullptr) {
+      return WindowsError();
+    }
+
+    // Call `::InitializeProcThreadAttributeList` to actually initialize.
+    result = ::InitializeProcThreadAttributeList(attribute_list, 1, 0, &size);
+    if (!result) {
+      return WindowsError();
+    }
+
+    initialized = true;
+
+    // `std::vector` is contigious in memory, so we can pass `vector::data()`.
+    result = ::UpdateProcThreadAttribute(
+        attribute_list,
+        0,
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+        handles.data(),
+        sizeof(HANDLE) * handles.size(),
+        nullptr,
+        nullptr);
+
+    if (result == FALSE) {
+      return WindowsError();
+    }
+
+    return Nothing();
+  }
+
+  const LPPROC_THREAD_ATTRIBUTE_LIST get() const {
+    return attribute_list;
+  }
+
+private:
+   LPPROC_THREAD_ATTRIBUTE_LIST attribute_list;
+   bool initialized;
+};
+
 
 struct ProcessData {
   SharedHandle process_handle;
@@ -249,7 +339,9 @@ inline Try<ProcessData> create_process(
   arg_buffer.push_back(L'\0');
 
   // Create the process with a Unicode environment.
-  DWORD creation_flags = CREATE_UNICODE_ENVIRONMENT;
+  DWORD creation_flags =
+    CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
+
   if (create_suspended) {
     creation_flags |= CREATE_SUSPENDED;
   }
@@ -266,8 +358,10 @@ inline Try<ProcessData> create_process(
 
   PROCESS_INFORMATION process_info = {};
 
-  STARTUPINFOW startup_info = {};
-  startup_info.cb = sizeof(STARTUPINFOW);
+  STARTUPINFOEXW startup_info = {};
+  startup_info.StartupInfo.cb = sizeof(startup_info);
+
+  ProcThreadAttributeList attribute_list;
 
   // Hook up the stdin/out/err pipes and use the `STARTF_USESTDHANDLES`
   // flag to instruct the child to use them [1].
@@ -284,11 +378,33 @@ inline Try<ProcessData> create_process(
       }
     }
 
-    startup_info.dwFlags |= STARTF_USESTDHANDLES;
-    startup_info.hStdInput = std::get<0>(pipes.get());
-    startup_info.hStdOutput = std::get<1>(pipes.get());
-    startup_info.hStdError = std::get<2>(pipes.get());
+    startup_info.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
+    startup_info.StartupInfo.hStdInput = std::get<0>(pipes.get());
+    startup_info.StartupInfo.hStdOutput = std::get<1>(pipes.get());
+    startup_info.StartupInfo.hStdError = std::get<2>(pipes.get());
+
+    // Specify that we only want to inherit the handles in `startup_info`.
+    // We do this because handle properties are global, so if another thread
+    // is also calling this function at the same time, we might leak the other
+    // thread's handles to our child process. We can use the `lpAttributeList`
+    // field in `STARTUPINFOEXW` tell Windows to inherit these handles. See
+    // https://blogs.msdn.microsoft.com/oldnewthing/20111216-00/?p=8873 for
+    // more details and the sample code that the `ProcThreadAttributeList`
+    // class was based off.
+    std::vector<HANDLE> inherited_handles = {
+      std::get<0>(pipes.get()),
+      std::get<1>(pipes.get()),
+      std::get<2>(pipes.get())
+    };
+
+    Try<Nothing> res = attribute_list.init_attribute_list(inherited_handles);
+    if (res.isError()) {
+      return Error("Failed to initialize `LPPROC_THREAD_ATTRIBUTE_LIST` for "
+                   "`CreateProcess`: " + res.error());
+    }
   }
+
+  startup_info.lpAttributeList = attribute_list.get();
 
   const BOOL result = ::CreateProcessW(
       // This is replaced by the first token of `arg_buffer` string.
@@ -300,7 +416,7 @@ inline Try<ProcessData> create_process(
       creation_flags,
       static_cast<LPVOID>(process_env),
       static_cast<LPCWSTR>(nullptr), // Inherit working directory.
-      &startup_info,
+      reinterpret_cast<LPSTARTUPINFOW>(&startup_info),
       &process_info);
 
   // NOTE: The MSDN documentation for `CreateProcess` states that it
