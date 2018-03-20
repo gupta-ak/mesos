@@ -57,6 +57,7 @@
 #include <stout/os/int_fd.hpp>
 #include <stout/os/close.hpp>
 #include <stout/os/open.hpp>
+#include <stout/os/write.hpp>
 
 #ifdef __WINDOWS__
 #include <stout/windows/net.hpp>
@@ -162,25 +163,33 @@ inline Try<int> download(const std::string& url, const std::string& path)
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, nullptr);
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, true);
 
+#ifdef __WINDOWS__
+  // On Windows we use a write callback so we don't have to use a `fdopen`.
+  auto callback =
+    [&fd](char* ptr, size_t size, size_t nmemb, void* userdata) -> size_t {
+    return os::write(fd.get(), static_cast<void*>(ptr), size * nmemb);
+  };
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, callback);
+#else
+  // TODO(andschwa): Use the callback for non-Windows too.
+  //
   // We don't bother introducing a `os::fdopen` since this is the only place
   // we use `fdopen` in the entire codebase as of writing this comment.
-#ifdef __WINDOWS__
-  // We open in "binary" mode on Windows to avoid line-ending translation.
-  FILE* file = ::_fdopen(fd->crt(), "wb");
-#else
   FILE* file = ::fdopen(fd.get(), "w");
-#endif
   if (file == nullptr) {
     curl_easy_cleanup(curl);
     os::close(fd.get());
     return ErrnoError("Failed to open file handle of '" + path + "'");
   }
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, file);
+#endif // __WINDOWS__
 
   CURLcode curlErrorCode = curl_easy_perform(curl);
   if (curlErrorCode != 0) {
     curl_easy_cleanup(curl);
+#ifndef __WINDOWS__
     fclose(file);
+#endif // __WINDOWS__
     return Error(curl_easy_strerror(curlErrorCode));
   }
 
@@ -188,9 +197,13 @@ inline Try<int> download(const std::string& url, const std::string& path)
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
   curl_easy_cleanup(curl);
 
+#ifndef __WINDOWS__
   if (fclose(file) != 0) {
     return ErrnoError("Failed to close file handle of '" + path + "'");
   }
+#endif // __WINDOWS__
+
+  os::close(fd.get());
 
   return Try<int>::some(code);
 }
