@@ -514,8 +514,13 @@ class InternetFilter : public TestFilter
 public:
   InternetFilter()
   {
-    error = os::system("ping -c 1 -W 1 google.com") != 0;
     // TODO(andschwa): Make ping command cross-platform.
+#ifdef __WINDOWS__
+    const std::string pingCommand("ping -n 1 -w 1 google.com");
+#else
+    const std::string pingCommand("ping -c 1 -W 1 google.com");
+#endif // __WINDOWS__
+    error = os::system(pingCommand) != 0;
     if (error) {
       std::cerr
         << "-------------------------------------------------------------\n"
