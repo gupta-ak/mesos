@@ -72,7 +72,11 @@ public:
      */
     struct InputFileDescriptors
     {
+#ifdef __WINDOWS__
+      int_fd read = INVALID_HANDLE_VALUE;
+#else
       int_fd read = -1;
+#endif // __WINDOWS__
       Option<int_fd> write = None();
     };
 
@@ -88,7 +92,11 @@ public:
     struct OutputFileDescriptors
     {
       Option<int_fd> read = None();
+#ifdef __WINDOWS__
+      int_fd write = INVALID_HANDLE_VALUE;
+#else
       int_fd write = -1;
+#endif // __WINDOWS__
     };
 
     /**

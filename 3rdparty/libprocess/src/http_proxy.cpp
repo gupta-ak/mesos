@@ -150,7 +150,7 @@ bool HttpProxy::process(const Future<Response>& future, const Request& request)
     response.body.clear();
 
     const string& path = response.path;
-    int_fd fd = open(path.c_str(), O_RDONLY);
+    int_fd fd = os::open(path, O_RDONLY);
     if (fd < 0) {
       if (errno == ENOENT || errno == ENOTDIR) {
           VLOG(1) << "Returning '404 Not Found' for path '" << path << "'";

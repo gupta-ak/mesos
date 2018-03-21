@@ -211,7 +211,11 @@ protected:
   int_fd release()
   {
     int_fd released = s;
+#ifdef __WINDOWS__
+    s = INVALID_SOCKET;
+#else
     s = -1;
+#endif // __WINDOWS__
     return released;
   }
 
