@@ -546,8 +546,13 @@ TEST_F(FsTest, Close)
   ASSERT_EQ(test_message1 + test_message1, read_valid_handle.get());
 #endif // __WINDOWS__
 
+#ifdef __WINDOWS__
+  // Try `close` with invalid file descriptor.
+  EXPECT_ERROR(os::close(INVALID_HANDLE_VALUE));
+#else
   // Try `close` with invalid file descriptor.
   EXPECT_ERROR(os::close(static_cast<int>(-1)));
+#endif // __WINDOWS__
 
 #ifdef __WINDOWS__
   // Try `close` with invalid `SOCKET` and `HANDLE`.

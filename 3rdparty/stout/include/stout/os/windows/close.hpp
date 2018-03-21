@@ -28,16 +28,13 @@ namespace os {
 inline Try<Nothing> close(const int_fd& fd)
 {
   switch (fd.type()) {
-    case WindowsFD::FD_CRT:
-    case WindowsFD::FD_HANDLE: {
-      // We don't need to call `CloseHandle` on `fd.handle`, because calling
-      // `_close` on the corresponding CRT FD implicitly invokes `CloseHandle`.
-      if (::_close(fd.crt()) < 0) {
-        return ErrnoError();
+    case WindowsFD::Type::HANDLE: {
+      if (::CloseHandle(fd) == FALSE) {
+        return WindowsError();
       }
-      break;
+      return Nothing();
     }
-    case WindowsFD::FD_SOCKET: {
+    case WindowsFD::Type::SOCKET: {
       // NOTE: Since closing an unconnected socket is not an error in POSIX,
       // we simply ignore it here.
       if (::shutdown(fd, SD_BOTH) == SOCKET_ERROR &&
@@ -47,10 +44,9 @@ inline Try<Nothing> close(const int_fd& fd)
       if (::closesocket(fd) == SOCKET_ERROR) {
         return WindowsSocketError("Failed to close a socket");
       }
-      break;
+      return Nothing();
     }
   }
-  return Nothing();
 }
 
 } // namespace os {
