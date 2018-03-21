@@ -80,12 +80,31 @@ inline Try<Nothing> write(int_fd fd, const google::protobuf::Message& message)
   }
 
 #ifdef __WINDOWS__
-  if (!message.SerializeToFileDescriptor(fd.crt())) {
-#else
-  if (!message.SerializeToFileDescriptor(fd)) {
-#endif
+  // NOTE: On Windows, we need to explicitly allocate a CRT file
+  // descriptor here, so we first have to duplicate the `HANDLE`,
+  // because once the CRT file descriptor is allocated, it must be
+  // closed with `_close` (which calls `CloseHandle` on the original
+  // `HANDLE`) instead of `CloseHandle`/`os::close`, and we don't want
+  // to close the `HANDLE` twice. This is important because users of
+  // `protobuf::write` will call `os::close` on the original `HANDLE`,
+  // hence the duplicate here.
+  Try<int_fd> dup = os::dup(fd);
+  if (dup.isError()) {
+    return Error("Failed to duplicate handle: " + dup.error());
+  }
+
+  int crt = dup->crt();
+
+  if (!message.SerializeToFileDescriptor(crt)) {
+    ::_close(crt);
     return Error("Failed to write/serialize message");
   }
+  ::_close(crt);
+#else
+  if (!message.SerializeToFileDescriptor(fd)) {
+    return Error("Failed to write/serialize message");
+  }
+#endif
 
   return Nothing();
 }
