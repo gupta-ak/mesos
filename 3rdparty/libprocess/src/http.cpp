@@ -1549,7 +1549,7 @@ Future<Nothing> sendfile(
     return send(socket, InternalServerError(body), request);
   }
 
-  const Try<Bytes> size = os::stat::size(fd);
+  const Try<Bytes> size = os::stat::size(fd.get());
   if (size.isError()) {
     const string body =
       "Failed to fstat '" + response.path + "': " + size.error();
@@ -1558,7 +1558,7 @@ Future<Nothing> sendfile(
     // TODO(benh): Copy headers from `response`?
     os::close(fd.get());
     return send(socket, InternalServerError(body), request);
-  } else if (os::stat::isdir(fd)) {
+  } else if (os::stat::isdir(fd.get())) {
     const string body = "'" + response.path + "' is a directory";
     // TODO(benh): VLOG(1)?
     // TODO(benh): Don't send error back as part of InternalServiceError?

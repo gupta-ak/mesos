@@ -102,6 +102,16 @@ public:
 
   WindowsFD(SOCKET socket) : type_(Type::SOCKET), socket_(socket) {}
 
+  WindowsFD(int crt) : type_(Type::HANDLE), handle_(INVALID_HANDLE_VALUE) {
+    if (crt == 0) {
+      handle_ = GetStdHandle(STD_INPUT_HANDLE);
+    } else if (crt == 1) {
+      handle_ = GetStdHandle(STD_INPUT_HANDLE);
+    } else if (crt == 2) {
+      handle_ = GetStdHandle(STD_INPUT_HANDLE);
+    }
+  }
+
   // On Windows, libevent's `evutil_socket_t` is set to `intptr_t`.
   WindowsFD(intptr_t socket)
     : type_(Type::SOCKET), socket_(static_cast<SOCKET>(socket))
@@ -174,7 +184,7 @@ public:
 private:
   Type type_;
 
-  union
+  struct
   {
     HandleFD handle_;
     SocketFD socket_;
