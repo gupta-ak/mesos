@@ -29,6 +29,11 @@ inline Try<Nothing> close(const int_fd& fd)
 {
   switch (fd.type()) {
     case WindowsFD::Type::HANDLE: {
+      if (static_cast<HANDLE>(fd) == INVALID_HANDLE_VALUE) {
+        // ::CloseHandle(INVALID_HANDLE_VALUE) is a successful no-op instead
+        // of an error. We want to make it an error though.
+        return WindowsError(ERROR_INVALID_HANDLE);
+      }
       if (::CloseHandle(fd) == FALSE) {
         return WindowsError();
       }
