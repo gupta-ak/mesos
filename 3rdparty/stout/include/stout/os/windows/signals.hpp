@@ -13,10 +13,7 @@
 #ifndef __STOUT_OS_WINDOWS_SIGNALS_HPP__
 #define __STOUT_OS_WINDOWS_SIGNALS_HPP__
 
-#include <errno.h>
-#include <signal.h>
-#include <string.h>
-
+#include <stout/unimplemented.hpp>
 
 namespace os {
 
@@ -67,7 +64,6 @@ namespace internal {
 struct Suppressor
 {
   Suppressor(int _signal)
-    : signal(_signal), pending(false), unblock(false)
   {
     UNIMPLEMENTED;
   }
