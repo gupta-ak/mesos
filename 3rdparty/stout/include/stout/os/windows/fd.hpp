@@ -63,9 +63,18 @@ public:
   //            than `INVALID_HANDLE_VALUE`.
   // TODO(mpark): Consider adding a second parameter which tells us what the
   //              error values are.
-  WindowsFD(HANDLE handle) : type_(Type::HANDLE), handle_(handle) {}
+  WindowsFD(HANDLE handle, bool overlapped = false)
+    : type_(Type::HANDLE),
+      handle_(handle),
+      overlapped_(overlapped) {}
 
-  WindowsFD(SOCKET socket) : type_(Type::SOCKET), socket_(socket) {}
+  // Note that socket handles should almost always be overlapped. We do provide
+  // a way in stout to create non-overlapped sockets, so for completeness, we
+  // have a overlapped parameter in the constructor.
+  WindowsFD(SOCKET socket, bool overlapped = true)
+    : type_(Type::SOCKET),
+      socket_(socket),
+      overlapped_(overlapped) {}
 
   WindowsFD(int crt) : WindowsFD(INVALID_HANDLE_VALUE)
   {
@@ -136,6 +145,10 @@ public:
 
   Type type() const { return type_; }
 
+  bool is_overlapped() const {
+    return overlapped_;
+  }
+
 private:
   Type type_;
 
@@ -143,6 +156,8 @@ private:
     HANDLE handle_;
     SOCKET socket_;
   };
+
+  bool overlapped_;
 
   // NOTE: This function is provided only for checking validity, thus
   // it is private. It provides a view of a `WindowsFD` as an `int`.
