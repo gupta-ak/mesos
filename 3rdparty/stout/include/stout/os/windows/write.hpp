@@ -13,38 +13,37 @@
 #ifndef __STOUT_OS_WINDOWS_WRITE_HPP__
 #define __STOUT_OS_WINDOWS_WRITE_HPP__
 
-#include <stout/nothing.hpp>
-#include <stout/try.hpp>
-#include <stout/unreachable.hpp>
-#include <stout/windows.hpp>
+#include <stout/result.hpp>
 
-#include <stout/os/int_fd.hpp>
-#include <stout/os/socket.hpp>
+#include <stout/os/windows/io.hpp>
 
 namespace os {
 
+// Asynchronous write on a overlapped int_fd. Returns `Error` on fatal errors,
+// `None()` on a successful pending IO operation or number of bytes written on
+// a successful IO operation that finished immediately.
+//
+// NOTE: The type of `overlapped` is `void*` instead of `OVERLAPPED*`, so that
+// the caller can use their custom overlapped struct without having to cast
+// it. A common practice in Windows Overlapped IO is to create a new overlapped
+// struct that extends the `OVERLAPPED` struct with custom data. For more info,
+// see https://blogs.msdn.microsoft.com/oldnewthing/20101217-00/?p=11983.
+inline Result<size_t> write_async(
+    const int_fd& fd,
+    const void* data,
+    size_t size,
+    void* overlapped)
+{
+  return internal::read_write_async(
+      fd, const_cast<void*>(data), size, overlapped, internal::IOType::WRITE);
+}
+
+// Synchronous writes on any int_fd. Returns -1 on error and number of bytes
+// written on success.
 inline ssize_t write(const int_fd& fd, const void* data, size_t size)
 {
-  CHECK_LE(size, INT_MAX);
-
-  switch (fd.type()) {
-    case WindowsFD::Type::HANDLE: {
-      DWORD bytes;
-      // TODO(andschwa): Handle overlapped I/O.
-      const BOOL result =
-        ::WriteFile(fd, data, static_cast<DWORD>(size), &bytes, nullptr);
-      if (result == FALSE) {
-        return -1; // Indicates an error, but we can't return a `WindowsError`.
-      }
-
-      return static_cast<ssize_t>(bytes);
-    }
-    case WindowsFD::Type::SOCKET: {
-      return ::send(fd, (const char*)data, static_cast<int>(size), 0);
-    }
-  }
-
-  UNREACHABLE();
+  return internal::read_write_sync(
+      fd, const_cast<void*>(data), size, internal::IOType::WRITE);
 }
 
 } // namespace os {
