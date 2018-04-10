@@ -14,41 +14,35 @@
 #define __STOUT_OS_WINDOWS_READ_HPP__
 
 #include <stout/result.hpp>
-#include <stout/unreachable.hpp>
-#include <stout/windows.hpp>
 
-#include <stout/os/int_fd.hpp>
-#include <stout/os/socket.hpp>
+#include <stout/os/windows/io.hpp>
 
 namespace os {
 
+// Asynchronous read on a overlapped int_fd. Returns `Error` on fatal errors,
+// `None()` on a successful pending IO operation or number of bytes read on a
+// successful IO operation that finished immediately.
+//
+// NOTE: The type of `overlapped` is `void*` instead of `OVERLAPPED*`, so that
+// the caller can use their custom overlapped struct without having to cast
+// it. A common practice in Windows Overlapped IO is to create a new overlapped
+// struct that extends the `OVERLAPPED` struct with custom data. For more info,
+// see https://blogs.msdn.microsoft.com/oldnewthing/20101217-00/?p=11983.
+inline Result<size_t> read_async(
+    const int_fd& fd,
+    void* data,
+    size_t size,
+    void* overlapped)
+{
+  return internal::read_write_async(
+      fd, data, size, overlapped, internal::IOType::READ);
+}
+
+// Synchronous reads on any int_fd. Returns -1 on error and
+// number of bytes read on success.
 inline ssize_t read(const int_fd& fd, void* data, size_t size)
 {
-  CHECK_LE(size, UINT_MAX);
-
-  switch (fd.type()) {
-    case WindowsFD::Type::HANDLE: {
-      DWORD bytes;
-      // TODO(andschwa): Handle overlapped I/O.
-      const BOOL result =
-        ::ReadFile(fd, data, static_cast<DWORD>(size), &bytes, nullptr);
-      if (result == FALSE) {
-        // The pipe "breaks" when the other process closes its handle, but we
-        // still have the data and therefore do not want to return an error.
-        if (::GetLastError() != ERROR_BROKEN_PIPE) {
-          // Indicates an error, but we can't return a `WindowsError`.
-          return -1;
-        }
-      }
-
-      return static_cast<ssize_t>(bytes);
-    }
-    case WindowsFD::Type::SOCKET: {
-      return ::recv(fd, (char*)data, static_cast<unsigned int>(size), 0);
-    }
-  }
-
-  UNREACHABLE();
+  return internal::read_write_sync(fd, data, size, internal::IOType::READ);
 }
 
 } // namespace os {
