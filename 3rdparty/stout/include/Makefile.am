@@ -175,6 +175,7 @@ nobase_include_HEADERS =			\
   stout/os/windows/ftruncate.hpp		\
   stout/os/windows/getcwd.hpp			\
   stout/os/windows/getenv.hpp			\
+  stout/os/windows/io.hpp			\
   stout/os/windows/jobobject.hpp		\
   stout/os/windows/kill.hpp			\
   stout/os/windows/killtree.hpp			\
