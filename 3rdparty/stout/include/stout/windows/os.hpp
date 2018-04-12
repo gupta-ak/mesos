@@ -330,6 +330,12 @@ inline Try<Nothing> mknod(
 // Mesos only requires millisecond resolution, so this is ok for now.
 inline Try<Nothing> sleep(const Duration& duration)
 {
+  if (duration.ms() < 0) {
+    return WindowsError(ERROR_INVALID_PARAMETER);
+  }
+
+  // TODO(andschwa): If we need the sleep to be alertable (say for
+  // IOCP), we can use `SleepEx` instead.
   ::Sleep(static_cast<DWORD>(duration.ms()));
 
   return Nothing();
