@@ -43,6 +43,10 @@
 #include <stout/strings.hpp>
 #include <stout/unreachable.hpp>
 
+#ifdef __WINDOWS__
+#include <stout/internal/windows/inherit.hpp>
+#endif // __WINDOWS__
+
 #include <stout/os/wait.hpp>
 
 #include "common/protobuf_utils.hpp"
@@ -1816,11 +1820,30 @@ Future<Containerizer::LaunchResult> MesosContainerizerProcess::_launch(
 
   // Use a pipe to block the child until it's been isolated.
   // The `pipes` array is captured later in a lambda.
-  Try<std::array<int_fd, 2>> pipes_ = os::pipe();
-
+  //
   // TODO(jmlvanre): consider returning failure if `pipe` gives an
   // error. Currently we preserve the previous logic.
+#ifdef __WINDOWS__
+  // On Windows, we have to make the pipes inheritable and not overlapped, since
+  // that's what the mesos container launcher assumes.
+  Try<std::array<int_fd, 2>> pipes_ = os::pipe(false, false);
   CHECK_SOME(pipes_);
+
+  Try<Nothing> result = ::internal::windows::set_inherit(pipes_.get()[0], true);
+  if (result.isError()) {
+    return Failure("Could not set read pipe inheritance for launcher: " +
+                   result.error());
+  }
+
+  result = ::internal::windows::set_inherit(pipes_.get()[1], true);
+  if (result.isError()) {
+    return Failure("Could not set write pipe inheritance for launcher: " +
+                   result.error());
+  }
+#else
+  Try<std::array<int_fd, 2>> pipes_ = os::pipe();
+  CHECK_SOME(pipes_);
+#endif // __WINDOWS__
 
   const std::array<int_fd, 2>& pipes = pipes_.get();
 
