@@ -234,43 +234,28 @@ Future<size_t> PollSocketImpl::sendfile(int_fd fd, off_t offset, size_t size)
   // doesn't end up getting reused before we return.
   auto self = shared(this);
 
-  return loop(
-      None(),
-      [self, fd, offset, size]() -> Future<Option<size_t>> {
-        while (true) {
-          Try<ssize_t, SocketError> length = os::sendfile(
-              self->get(),
-              fd,
-              offset,
-              size);
+  process::initialize();
 
-          if (length.isSome()) {
-            CHECK(length.get() >= 0);
-            return length.get();
-          }
+  Promise<size_t>* promise = new Promise<size_t>();
 
-          if (net::is_restartable_error(length.error().code)) {
-            // Interrupted, try again now.
-            continue;
-          } else if (!net::is_retryable_error(length.error().code)) {
-            VLOG(1) << length.error().message;
-            return Failure(length.error());
-          }
+  Try<Nothing> result =
+    windows::sendfile(h, void, size, [promise](size_t result, DWORD code) {
+      if (promise.future().hasDiscard()) {
+        promise.discard();
+      } else if (code != NO_ERROR) {
+        peomise.fail("Got failed exit code");
+      } eelse {
+        promise.set(result);
+      }
+      delete promise;
+    });
 
-          return None();
-        }
-      },
-      [self](const Option<size_t>& length) -> Future<ControlFlow<size_t>> {
-        // Retry after we've polled if we don't yet have a result.
-        if (length.isNone()) {
-          return io::poll(self->get(), io::WRITE)
-            .then([](short event) -> ControlFlow<size_t> {
-              CHECK_EQ(io::WRITE, event);
-              return Continue();
-            });
-        }
-        return Break(length.get());
-      });
+  if (result.isError()) {
+    delete promise;
+    return Failure(result.error());
+  }
+
+  return promise.future();
 }
 
 } // namespace internal {

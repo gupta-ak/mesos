@@ -199,7 +199,7 @@ if (WIN32 AND REBUNDLED)
     "the Internet, even though the `REBUNDLED` flag was set.")
 endif ()
 
-if (WIN32 AND (NOT ENABLE_LIBEVENT))
+if (WIN32 AND (NOT ENABLE_LIBEVENT AND NOT ENABLE_LIBWINIO))
   message(
     FATAL_ERROR
     "Windows builds of Mesos currently do not support libev, the default event "

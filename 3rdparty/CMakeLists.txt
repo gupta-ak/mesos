@@ -556,7 +556,7 @@ if (ENABLE_LIBEVENT)
     INSTALL_COMMAND   ${CMAKE_NOOP}
     URL               ${LIBEVENT_URL}
     URL_HASH          ${LIBEVENT_HASH})
-else ()
+elseif (NOT ENABLE_LIBWINIO)
   # libev: Full-featured high-performance event loop.
   # https://github.com/enki/libev
   ###################################################
