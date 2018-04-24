@@ -21,8 +21,6 @@
 #include <ostream>
 
 #include <stout/check.hpp>
-#include <stout/nothing.hpp>
-#include <stout/try.hpp>
 #include <stout/unreachable.hpp>
 #include <stout/windows.hpp> // For `WinSock2.h`.
 
@@ -63,18 +61,22 @@ public:
   //            than `INVALID_HANDLE_VALUE`.
   // TODO(mpark): Consider adding a second parameter which tells us what the
   //              error values are.
-  WindowsFD(HANDLE handle, bool overlapped = false)
+  WindowsFD(
+      HANDLE handle, bool overlapped = false, Option<uintptr_t> id = None())
     : type_(Type::HANDLE),
       handle_(handle),
-      overlapped_(overlapped) {}
+      overlapped_(overlapped),
+      id_(id.getOrElse(reinterpret_cast<uintptr_t>(handle))) {}
 
   // Note that socket handles should almost always be overlapped. We do provide
   // a way in stout to create non-overlapped sockets, so for completeness, we
   // have a overlapped parameter in the constructor.
-  WindowsFD(SOCKET socket, bool overlapped = true)
+  WindowsFD(
+      SOCKET socket, bool overlapped = true, Option<uintptr_t> id = None())
     : type_(Type::SOCKET),
       socket_(socket),
-      overlapped_(overlapped) {}
+      overlapped_(overlapped),
+      id_(id.getOrElse(static_cast<uintptr_t>(socket))) {}
 
   WindowsFD(int crt) : WindowsFD(INVALID_HANDLE_VALUE)
   {
@@ -145,9 +147,9 @@ public:
 
   Type type() const { return type_; }
 
-  bool is_overlapped() const {
-    return overlapped_;
-  }
+  bool is_overlapped() const { return overlapped_; }
+
+  uintptr_t id() const { return id_; }
 
 private:
   Type type_;
@@ -158,6 +160,15 @@ private:
   };
 
   bool overlapped_;
+
+  // Unique ID for the underlying `FILE_OBJECT` pointed to by the HANDLE or
+  // SOCKET. When the handle is duplicated with `DuplicateHandle` or
+  // `WSADuplicateSocket`, the `FILE_OBJECT`is still the same, so this id
+  // should also stay the same in the new handle. We need this information,
+  // because some operations, like associating an HANDLE to an IO completion
+  // port work on a per `FILE_OBJECT` basis, so if we associate two handles
+  // that point to the same `FILE_OBJECT`, we get an error.
+  uintptr_t id_;
 
   // NOTE: This function is provided only for checking validity, thus
   // it is private. It provides a view of a `WindowsFD` as an `int`.
