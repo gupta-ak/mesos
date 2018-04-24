@@ -40,7 +40,7 @@ inline Try<int_fd> dup(const int_fd& fd)
         return WindowsError();
       }
 
-      return WindowsFD(duplicate, fd.is_overlapped());
+      return WindowsFD(duplicate, fd.is_overlapped(), fd.id());
     }
     case WindowsFD::Type::SOCKET: {
       WSAPROTOCOL_INFOW info;
@@ -55,7 +55,7 @@ inline Try<int_fd> dup(const int_fd& fd)
         return SocketError();
       }
 
-      return WindowsFD(duplicate, fd.is_overlapped());
+      return WindowsFD(duplicate, fd.is_overlapped(), fd.id());
     }
   }
 
