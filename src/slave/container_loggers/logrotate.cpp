@@ -99,7 +99,7 @@ public:
     }
 
     // NOTE: This is a prerequisuite for `io::read`.
-    Try<Nothing> nonblock = os::nonblock(STDIN_FILENO);
+    Try<Nothing> nonblock = io::prepare_async(STDIN_FILENO);
     if (nonblock.isError()) {
       return Failure("Failed to set nonblocking pipe: " + nonblock.error());
     }
