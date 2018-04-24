@@ -128,7 +128,9 @@ public:
 
   operator HANDLE() const
   {
-    CHECK_EQ(Type::HANDLE, type());
+    if (type() == Type::SOCKET) {
+      return reinterpret_cast<HANDLE>(socket_);
+    }
     return handle_;
   }
 
