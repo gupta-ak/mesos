@@ -40,15 +40,13 @@ namespace io {
 
 Try<Nothing> prepare_async(int_fd fd)
 {
-  // TODO(akagup): Add windows iocp.
-  return os::nonblock(fd);
+  return internal::prepare_async(fd);
 }
 
 
 Try<bool> is_async(int_fd fd)
 {
-  // TODO(akagup): Add windows iocp.
-  return os::isNonblock(fd);
+  return internal::is_async(fd);
 }
 
 

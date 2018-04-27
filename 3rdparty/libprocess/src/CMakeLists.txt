@@ -79,7 +79,8 @@ elseif(ENABLE_LIBWINIO)
   list(APPEND PROCESS_SRC
     libwinio.hpp
     libwinio.cpp
-    libwinio_eventloop.cpp)
+    libwinio_internal.hpp
+    libwinio_internal.cpp)
 else ()
   list(APPEND PROCESS_SRC
     libev.hpp

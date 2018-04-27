@@ -10,24 +10,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License
 
-#include <memory>
-#include <string>
-
-#include <boost/shared_array.hpp>
-
 #include <process/future.hpp>
-#include <process/io.hpp>
-#include <process/loop.hpp>
 #include <process/process.hpp> // For process::initialize.
 
-#include <stout/lambda.hpp>
-#include <stout/nothing.hpp>
-#include <stout/os.hpp>
+#include <stout/error.hpp>
 #include <stout/try.hpp>
 
-#include <stout/os/constants.hpp>
 #include <stout/os/read.hpp>
-#include <stout/os/strerror.hpp>
 #include <stout/os/write.hpp>
 
 #include "io_internal.hpp"
@@ -38,73 +27,65 @@ namespace io {
 namespace internal {
 
 Future<size_t> read(int_fd fd, void* data, size_t size)
-{ 
+{
+  process::initialize();
+
   // TODO(benh): Let the system calls do what ever they're supposed to
   // rather than return 0 here?
   if (size == 0) {
     return 0;
   }
 
-  windows::Threadpool* tp = windows::Threadpool::create(1).get();
-  windows::Handle h = tp->registerHandle(fd).get();
-
-  process::initialize();
-
-  Promise<size_t>* promise = new Promise<size_t>();
-
-  Try<Nothing> result =
-    windows::read(h, data, size, [promise](size_t result, DWORD code) {
-      if (promise->future().hasDiscard()) {
-        promise->discard();
-      } else if (code != NO_ERROR) {
-        promise->fail("Got failed exit code");
-      } else {
-        promise->set(result);
-      }
-      delete promise;
-    });
-
-  if (result.isError()) {
-    delete promise;
-    return Failure(result.error());
+  // Just do a synchronous call.
+  if (!fd.is_overlapped()) {
+    ssize_t result = os::read(fd, data, size);
+    if (result == -1) {
+      return Failure(WindowsError().message);
+    }
+    return static_cast<size_t>(result);
   }
 
-  return promise->future();
+  return windows::read(fd, data, size);
 }
 
 Future<size_t> write(int_fd fd, const void* data, size_t size)
 {
+  process::initialize();
+
   // TODO(benh): Let the system calls do what ever they're supposed to
   // rather than return 0 here?
   if (size == 0) {
     return 0;
   }
 
-  windows::Threadpool* tp = windows::Threadpool::create(1).get();
-  windows::Handle h = tp->registerHandle(fd).get();
-  
-  process::initialize();
-
-  Promise<size_t>* promise = new Promise<size_t>();
-
-  Try<Nothing> result =
-    windows::write(h, data, size, [promise](size_t result, DWORD code) {
-      if (promise->future().hasDiscard()) {
-        promise->discard();
-      } else if (code != NO_ERROR) {
-        promise->fail("Got failed exit code");
-      } else {
-        promise->set(result);
-      }
-      delete promise;
-    });
-  
-  if (result.isError()) {
-    delete promise;
-    return Failure(result.error());
+  // Just do a synchronous call.
+  if (!fd.is_overlapped()) {
+    ssize_t result = os::write(fd, data, size);
+    if (result == -1) {
+      return Failure(WindowsError().message);
+    }
+    return static_cast<size_t>(result);
   }
 
-  return promise->future();
+  return windows::write(fd, data, size);
+}
+
+
+Try<Nothing> prepare_async(int_fd fd)
+{
+  // TOOD(akagup): Makde this idempotent like os::nonblock.
+  if (!fd.is_overlapped()) {
+    return Nothing();
+  }
+
+  return libwinio_loop->registerHandle(fd);
+}
+
+
+Try<bool> is_async(int_fd fd)
+{
+  // TODO(akagup): Add windows iocp.
+  return true;
 }
 
 } // namespace internal {

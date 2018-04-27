@@ -17,6 +17,7 @@
 #include <fcntl.h> // For `O_RDWR`.
 
 #include <array>
+#include <functional>
 #include <memory>
 #include <ostream>
 
@@ -62,21 +63,23 @@ public:
   // TODO(mpark): Consider adding a second parameter which tells us what the
   //              error values are.
   WindowsFD(
-      HANDLE handle, bool overlapped = false, Option<uintptr_t> id = None())
+      HANDLE handle,
+      bool overlapped = false,
+      volatile HANDLE iocp_handle = nullptr)
     : type_(Type::HANDLE),
       handle_(handle),
-      overlapped_(overlapped),
-      id_(id.getOrElse(reinterpret_cast<uintptr_t>(handle))) {}
+      overlapped_(overlapped) {}
 
   // Note that socket handles should almost always be overlapped. We do provide
   // a way in stout to create non-overlapped sockets, so for completeness, we
   // have a overlapped parameter in the constructor.
   WindowsFD(
-      SOCKET socket, bool overlapped = true, Option<uintptr_t> id = None())
+      SOCKET socket,
+      bool overlapped = true,
+      volatile HANDLE iocp_handle = nullptr)
     : type_(Type::SOCKET),
       socket_(socket),
-      overlapped_(overlapped),
-      id_(id.getOrElse(static_cast<uintptr_t>(socket))) {}
+      overlapped_(overlapped) {}
 
   WindowsFD(int crt) : WindowsFD(INVALID_HANDLE_VALUE)
   {
@@ -151,8 +154,6 @@ public:
 
   bool is_overlapped() const { return overlapped_; }
 
-  uintptr_t id() const { return id_; }
-
 private:
   Type type_;
 
@@ -161,16 +162,11 @@ private:
     SOCKET socket_;
   };
 
+  // Returns if a file is opened in overlapped mode or not. This needs to be
+  // tracked, since the read/write is different for overlapped handles and
+  // the WIN32 doesn't provide a way to query the overlapped status of a
+  // handle.
   bool overlapped_;
-
-  // Unique ID for the underlying `FILE_OBJECT` pointed to by the HANDLE or
-  // SOCKET. When the handle is duplicated with `DuplicateHandle` or
-  // `WSADuplicateSocket`, the `FILE_OBJECT`is still the same, so this id
-  // should also stay the same in the new handle. We need this information,
-  // because some operations, like associating an HANDLE to an IO completion
-  // port work on a per `FILE_OBJECT` basis, so if we associate two handles
-  // that point to the same `FILE_OBJECT`, we get an error.
-  uintptr_t id_;
 
   // NOTE: This function is provided only for checking validity, thus
   // it is private. It provides a view of a `WindowsFD` as an `int`.

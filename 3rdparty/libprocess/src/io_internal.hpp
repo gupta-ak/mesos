@@ -10,6 +10,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License
 
+#ifndef __IO_INTERNAL_HPP__
+#define __IO_INTERNAL_HPP__
+
 #include <process/future.hpp>
 
 #include <stout/os/int_fd.hpp>
@@ -22,6 +25,12 @@ Future<size_t> read(int_fd fd, void* data, size_t size);
 
 Future<size_t> write(int_fd fd, const void* data, size_t size);
 
+Try<Nothing> prepare_async(int_fd fd);
+
+Try<bool> is_async(int_fd fd);
+
 } // namespace internal {
 } // namespace io {
 } // namespace process {
+
+#endif // __IO_INTERNAL_HPP__

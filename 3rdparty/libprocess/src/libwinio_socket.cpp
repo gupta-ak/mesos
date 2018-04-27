@@ -27,6 +27,7 @@
 #include <stout/os.hpp>
 
 #include "config.hpp"
+#include "libwinio_internal.hpp"
 #include "poll_socket.hpp"
 
 using std::string;
@@ -37,6 +38,10 @@ namespace internal {
 
 Try<std::shared_ptr<SocketImpl>> PollSocketImpl::create(int_fd s)
 {
+  Try<Nothing> error = io::prepare_async(s);
+  if (error.isError()) {
+    return Error(error.error());
+  }
   return std::make_shared<PollSocketImpl>(s);
 }
 
@@ -57,13 +62,102 @@ Future<std::shared_ptr<SocketImpl>> PollSocketImpl::accept()
   // `io::poll` and end up accepting a socket incorrectly.
   auto self = shared(this);
 
-  return Failure("XXX");
+  Try<Address> address = network::address(get());
+  if (address.isError()) {
+    return Failure("Failed to get address: " + address.error());
+  }
+
+  int family = 0;
+  if (address->family() == Address::Family::INET4) {
+    family = AF_INET;
+  } else if (address->family() == Address::Family::INET6) {
+    family = AF_INET6;
+  } else {
+    return Failure("Unsupported address family. Windows only supports IP.");
+  }
+
+  Try<int_fd> accept_socket_ = net::socket(family, SOCK_STREAM, 0);
+  if (accept_socket_.isError()) {
+    return Failure(accept_socket_.error());
+  }
+
+  int_fd accept_socket = accept_socket_.get();
+
+  return windows::accept(self->get(), accept_socket)
+    .onAny([accept_socket](const Future<Nothing> future) {
+      if (!future.isReady()) {
+        os::close(accept_socket);
+      }
+    })
+    .then([self, accept_socket]() -> Future<std::shared_ptr<SocketImpl>> {
+      SOCKET listen = self->get();
+
+      // Inherit from the listening socket.
+      int res = ::setsockopt(
+          accept_socket,
+          SOL_SOCKET,
+          SO_UPDATE_ACCEPT_CONTEXT,
+          reinterpret_cast<char*>(&listen),
+          sizeof(listen));
+
+      if (res != 0) {
+        const int error = ::WSAGetLastError();
+        os::close(accept_socket);
+        return Failure(
+              "Failed to set accepted socket: " + stringify(error));
+      }
+
+      // Disable Nagle algorithm.
+      int on = 1;
+      res = ::setsockopt(
+          accept_socket,
+          SOL_TCP,
+          TCP_NODELAY,
+          reinterpret_cast<const char*>(&on),
+          sizeof(on));
+
+      if (res != 0) {
+        const int error = ::WSAGetLastError();
+        os::close(accept_socket);
+        return Failure(
+            "Failed to turn off the Nagle algorithm: " + stringify(error));
+      }
+
+      Try<std::shared_ptr<SocketImpl>> impl = create(accept_socket);
+      if (impl.isError()) {
+        os::close(accept_socket);
+        return Failure("Failed to create socket: " + impl.error());
+      }
+
+      return impl.get();
+    });
 }
 
 
 Future<Nothing> PollSocketImpl::connect(const Address& address)
 {
-  return Nothing();
+  // Need to hold a copy of `this` so that the underlying socket
+  // doesn't end up getting reused before we return.
+  auto self = shared(this);
+
+  return windows::connect(self->get(), address)
+    .then([self]() -> Future<Nothing> {
+      // Set connect socket to be a "real" socket.
+      int res = ::setsockopt(
+          self->get(),
+          SOL_SOCKET,
+          SO_UPDATE_CONNECT_CONTEXT,
+          nullptr,
+          0);
+
+      if (res != 0) {
+        const int error = ::WSAGetLastError();
+        return Failure(
+              "Failed to set connected socket: " + stringify(error));
+      }
+
+      return Nothing();
+    });
 }
 
 
@@ -105,7 +199,11 @@ Future<size_t> PollSocketImpl::sendfile(int_fd fd, off_t offset, size_t size)
   // Need to hold a copy of `this` so that the underlying socket
   // doesn't end up getting reused before we return.
   auto self = shared(this);
-  return Failure("asdsad");
+
+  return windows::sendfile(self->get(), fd, offset, size)
+    .then([self](size_t length) {
+      return length;
+    });
 }
 
 } // namespace internal {

@@ -360,7 +360,9 @@ public:
 
   Future<Nothing> connect(const AddressType& address)
   {
-    return impl->connect(address);
+    std::shared_ptr<SocketImpl> self = impl->shared_from_this();
+    Future<Nothing> connect_future = impl->connect(address);
+    return connect_future;
   }
 
   Future<size_t> recv(char* data, size_t size) const

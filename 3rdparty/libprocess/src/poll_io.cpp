@@ -123,6 +123,18 @@ Future<size_t> write(int_fd fd, const void* data, size_t size)
       });
 }
 
+
+Try<Nothing> prepare_async(int_fd fd)
+{
+  return os::nonblock(fd);
+}
+
+
+Try<bool> is_async(int_fd fd)
+{
+  return os::isNonblock(fd);
+}
+
 } // namespace internal {
 } // namespace io {
 } // namespace process {
