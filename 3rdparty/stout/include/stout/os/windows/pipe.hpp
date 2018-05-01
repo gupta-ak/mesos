@@ -76,8 +76,8 @@ inline Try<std::array<int_fd, 2>> pipe(
       PIPE_ACCESS_INBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE | read_flags,
       PIPE_TYPE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
       1,        // Max pipe instances.
-      4096,     // Inbound buffer size.
-      4096,     // Outbound buffer size.
+      0,     // Inbound buffer size.
+      0,     // Outbound buffer size.
       0,        // Pipe timeout for connections.
       nullptr); // Security attributes.
 

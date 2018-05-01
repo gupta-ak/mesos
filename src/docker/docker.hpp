@@ -332,7 +332,8 @@ protected:
 private:
   static process::Future<Version> _version(
       const std::string& cmd,
-      const process::Subprocess& s);
+      const process::Subprocess& s,
+      process::Future<std::string> output);
 
   static process::Future<Version> __version(
       const process::Future<std::string>& output);
@@ -342,6 +343,7 @@ private:
       const std::string& containerName,
       const std::string& cmd,
       const process::Subprocess& s,
+      process::Future<std::string> error,
       bool remove);
 
   static void _inspect(
@@ -355,8 +357,9 @@ private:
       const std::string& cmd,
       const process::Owned<process::Promise<Container>>& promise,
       const Option<Duration>& retryInterval,
-      process::Future<std::string> output,
       const process::Subprocess& s,
+      process::Future<std::string> output,
+      process::Future<std::string> error,
       std::shared_ptr<std::pair<lambda::function<void()>, std::mutex>>
         callback);
 
@@ -373,7 +376,8 @@ private:
       const std::string& cmd,
       const process::Subprocess& s,
       const Option<std::string>& prefix,
-      process::Future<std::string> output);
+      process::Future<std::string> output,
+      process::Future<std::string> error);
 
   static process::Future<std::list<Container>> __ps(
       const Docker& docker,
@@ -400,7 +404,8 @@ private:
       const std::string& path,
       const std::string& socket,
       const Option<JSON::Object>& config,
-      process::Future<std::string> output);
+      process::Future<std::string> output,
+      process::Future<std::string> error);
 
   static process::Future<Image> __pull(
       const Docker& docker,
@@ -415,7 +420,9 @@ private:
       const process::Subprocess& s,
       const std::string& cmd,
       const std::string& directory,
-      const std::string& image);
+      const std::string& image,
+      process::Future<std::string> output,
+      process::Future<std::string> error);
 
   static process::Future<Image> ____pull(
       const std::string& output);
