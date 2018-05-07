@@ -206,6 +206,7 @@ libprocess_la_SOURCES =		\
   src/http_proxy.cpp		\
   src/http_proxy.hpp		\
   src/io.cpp			\
+  src/io_internal.hpp		\
   src/latch.cpp			\
   src/logging.cpp		\
   src/memory_profiler.cpp	\
@@ -213,6 +214,7 @@ libprocess_la_SOURCES =		\
   src/metrics/metrics.cpp	\
   src/mime.cpp			\
   src/pid.cpp			\
+  src/poll_io.cpp		\
   src/poll_socket.cpp		\
   src/poll_socket.hpp		\
   src/process.cpp		\

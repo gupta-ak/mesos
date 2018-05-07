@@ -42,6 +42,7 @@ set(PROCESS_SRC
   http_proxy.cpp
   http_proxy.hpp
   io.cpp
+  io_internal.hpp
   latch.cpp
   logging.cpp
   memory_profiler.cpp
@@ -49,6 +50,7 @@ set(PROCESS_SRC
   metrics/metrics.cpp
   mime.cpp
   pid.cpp
+  poll_io.cpp
   poll_socket.cpp
   poll_socket.hpp
   process.cpp
