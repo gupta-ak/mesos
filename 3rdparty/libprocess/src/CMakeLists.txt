@@ -67,7 +67,9 @@ set(PROCESS_SRC
 
 if (WIN32)
   list(APPEND PROCESS_SRC
-    subprocess_windows.cpp)
+    subprocess_windows.cpp
+    libwinio_impl.cpp  # TEMPORARY
+    libwinio_impl.hpp) # TEMPORARY
 else ()
   list(APPEND PROCESS_SRC
     subprocess_posix.cpp)
