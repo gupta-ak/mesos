@@ -50,8 +50,6 @@ set(PROCESS_SRC
   metrics/metrics.cpp
   mime.cpp
   pid.cpp
-  poll_io.cpp
-  poll_socket.cpp
   poll_socket.hpp
   process.cpp
   process_reference.hpp
@@ -67,9 +65,7 @@ set(PROCESS_SRC
 
 if (WIN32)
   list(APPEND PROCESS_SRC
-    subprocess_windows.cpp
-    libwinio_impl.cpp  # TEMPORARY
-    libwinio_impl.hpp) # TEMPORARY
+    subprocess_windows.cpp)
 else ()
   list(APPEND PROCESS_SRC
     subprocess_posix.cpp)
@@ -85,11 +81,27 @@ if (ENABLE_LIBEVENT)
     libevent.hpp
     libevent.cpp
     libevent_poll.cpp)
+elseif(ENABLE_LIBWINIO)
+  list(APPEND PROCESS_SRC
+    libwinio.hpp
+    libwinio_impl.hpp
+    libwinio_impl.cpp)
 else ()
   list(APPEND PROCESS_SRC
     libev.hpp
     libev.cpp
     libev_poll.cpp)
+endif ()
+
+if (ENABLE_LIBWINIO)
+  list(APPEND PROCESS_SRC
+    libwinio_eventloop.cpp
+    libwinio_socket.cpp
+    libwinio_io.cpp)
+else ()
+  list(APPEND PROCESS_SRC
+    poll_socket.cpp
+    poll_io.cpp)
 endif ()
 
 if (ENABLE_SSL)
@@ -115,10 +127,17 @@ target_link_libraries(
   $<$<BOOL:${ENABLE_SSL}>:OpenSSL::SSL>
   $<$<BOOL:${ENABLE_SSL}>:OpenSSL::Crypto>)
 
-target_link_libraries(
-  process PRIVATE
-  concurrentqueue
-  $<IF:$<BOOL:${ENABLE_LIBEVENT}>,libevent,libev>)
+if (NOT WIN32)
+  target_link_libraries(
+    process PRIVATE
+    concurrentqueue
+    $<IF:$<BOOL:${ENABLE_LIBEVENT}>,libevent,libev>)
+else ()
+  target_link_libraries(
+    process PRIVATE
+    concurrentqueue
+    $<$<BOOL:${ENABLE_LIBEVENT}>:libevent>)
+endif ()
 
 target_compile_definitions(
   process PRIVATE
