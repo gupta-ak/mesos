@@ -18,6 +18,7 @@
 
 #include <array>
 #include <memory>
+#include <mutex>
 #include <ostream>
 #include <type_traits>
 
@@ -69,8 +70,7 @@ public:
       std::is_same<HANDLE, void*>::value,
       "Expected `HANDLE` to be of type `void*`.");
   explicit WindowsFD(HANDLE handle, bool overlapped = false)
-    : type_(Type::HANDLE), handle_(handle), overlapped_(overlapped)
-  {}
+    : WindowsFD(handle, overlapped, std::make_shared<IOCPHandle>()) {}
 
   // The `SOCKET` here is expected to be Windows sockets, such as that
   // used by the Windows Sockets 2 library. The only expected error
@@ -83,8 +83,7 @@ public:
       std::is_same<SOCKET, unsigned __int64>::value,
       "Expected `SOCKET` to be of type `unsigned __int64`.");
   explicit WindowsFD(SOCKET socket, bool overlapped = true)
-    : type_(Type::SOCKET), socket_(socket), overlapped_(overlapped)
-  {}
+    : WindowsFD(socket, overlapped, std::make_shared<IOCPHandle>()) {}
 
   // On Windows, libevent's `evutil_socket_t` is set to `intptr_t`.
   explicit WindowsFD(intptr_t socket) : WindowsFD(static_cast<SOCKET>(socket))
@@ -173,6 +172,47 @@ public:
 
   bool is_overlapped() const { return overlapped_; }
 
+  // Assigns this `WindowsFD` to an IOCP. Returns `nullptr` is this is the first
+  // time that `this` was assigned to an IOCP. If `this` was already assigned,
+  // then this function no-ops and returns the assigned IOCP `HANDLE`. We have
+  // this function because `CreateIoCompletionPort` returns an error if a
+  // `HANDLE` gets assigned to an IOCP `HANDLE` twice, but provides no way to
+  // check for that error.
+  Try<HANDLE> assign_iocp(HANDLE iocp_handle, ULONG_PTR key) const
+  {
+    std::lock_guard<std::mutex> lock(iocp_handle_->mutex);
+    HANDLE prev_handle = iocp_handle_->handle;
+    if (prev_handle == nullptr) {
+      // Confusing name, but `::CreateIoCompletionPort` can also assigns
+      // a `HANDLE` to an IO completion port.
+      if (::CreateIoCompletionPort(*this, iocp_handle, key, 0) == nullptr) {
+        return WindowsError();
+      }
+      iocp_handle_->handle = iocp_handle;
+    }
+    return prev_handle;
+  }
+
+  HANDLE get_iocp() const
+  {
+    std::lock_guard<std::mutex> lock(iocp_handle_->mutex);
+    return iocp_handle_->handle;
+  }
+
+  // Helpers to properly construct a new `WindowsFD` class if the underlying
+  // `HANDLE` or `SOCKET` was dupicated.
+  WindowsFD dup(HANDLE duplicate) const
+  {
+    CHECK_EQ(Type::HANDLE, type());
+    return WindowsFD(duplicate, overlapped_, iocp_handle_);
+  }
+
+  WindowsFD dup(SOCKET duplicate) const
+  {
+    CHECK_EQ(Type::SOCKET, type());
+    return WindowsFD(duplicate, overlapped_, iocp_handle_);
+  }
+
 private:
   Type type_;
 
@@ -183,6 +223,37 @@ private:
   };
 
   bool overlapped_;
+
+  // There can be many `int_fd`copies of the same `HANDLE` and many `HANDLE`
+  // can reference the same kernel `FILE_OBJECT`. Since the IOCP affects the
+  // underlying `FILE_OBJECT`, we keep a pointer to the IOCP handle so we can
+  // update it for all int_fds that refer to the same `FILE_OBJECT`.
+  struct IOCPHandle
+  {
+    std::mutex mutex;
+    HANDLE handle = nullptr;
+  };
+
+  std::shared_ptr<IOCPHandle> iocp_handle_;
+
+  // Private constructors to help properly implement `WindowsFD::dup()`.
+  explicit WindowsFD(
+      HANDLE handle,
+      bool overlapped,
+      const std::shared_ptr<IOCPHandle>& iocp_handle)
+    : type_(Type::HANDLE),
+      handle_(handle),
+      overlapped_(overlapped),
+      iocp_handle_(iocp_handle) {}
+
+  explicit WindowsFD(
+      SOCKET socket,
+      bool overlapped,
+      const std::shared_ptr<IOCPHandle>& iocp_handle)
+    : type_(Type::SOCKET),
+      socket_(socket),
+      overlapped_(overlapped),
+      iocp_handle_(iocp_handle) {}
 
   // NOTE: This function is provided only for checking validity, thus
   // it is private. It provides a view of a `WindowsFD` as an `int`.
