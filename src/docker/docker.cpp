@@ -79,20 +79,24 @@ static Future<T> failure(
 }
 
 
-static Future<Nothing> _checkError(const string& cmd, const Subprocess& s)
+static Future<Nothing> _checkError(
+    const string& cmd,
+    const Subprocess& s,
+    Future<string> error)
 {
   Option<int> status = s.status().get();
   if (status.isNone()) {
+    error.discard();
     return Failure("No status found for '" + cmd + "'");
   }
 
   if (status.get() != 0) {
     // TODO(tnachen): Consider returning stdout as well.
-    CHECK_SOME(s.err());
-    return io::read(s.err().get())
+    return error
       .then(lambda::bind(failure<Nothing>, cmd, status.get(), lambda::_1));
   }
 
+  error.discard();
   return Nothing();
 }
 
@@ -101,8 +105,10 @@ static Future<Nothing> _checkError(const string& cmd, const Subprocess& s)
 // subprocess.
 static Future<Nothing> checkError(const string& cmd, const Subprocess& s)
 {
+  CHECK_SOME(s.err());
+  Future<string> error = io::read(s.err().get());
   return s.status()
-    .then(lambda::bind(_checkError, cmd, s));
+    .then(lambda::bind(_checkError, cmd, s, error));
 }
 
 
@@ -168,18 +174,24 @@ Future<Version> Docker::version() const
       cmd,
       Subprocess::PATH(os::DEV_NULL),
       Subprocess::PIPE(),
-      Subprocess::PIPE());
+      Subprocess::PATH(os::DEV_NULL));
 
   if (s.isError()) {
     return Failure("Failed to create subprocess '" + cmd + "': " + s.error());
   }
 
+  CHECK_SOME(s->out());
+  Future<string> output = io::read(s->out().get());
+
   return s->status()
-    .then(lambda::bind(&Docker::_version, cmd, s.get()));
+    .then(lambda::bind(&Docker::_version, cmd, s.get(), output));
 }
 
 
-Future<Version> Docker::_version(const string& cmd, const Subprocess& s)
+Future<Version> Docker::_version(
+    const string& cmd,
+    const Subprocess& s,
+    Future<string> output)
 {
   const Option<int>& status = s.status().get();
   if (status.isNone() || status.get() != 0) {
@@ -189,13 +201,11 @@ Future<Version> Docker::_version(const string& cmd, const Subprocess& s)
     } else {
       msg += "unknown exit status";
     }
+    output.discard();
     return Failure(msg);
   }
 
-  CHECK_SOME(s.out());
-
-  return io::read(s.out().get())
-    .then(lambda::bind(&Docker::__version, lambda::_1));
+  return output.then(lambda::bind(&Docker::__version, lambda::_1));
 }
 
 
@@ -1193,6 +1203,9 @@ Future<Nothing> Docker::stop(
     return Failure("Failed to create subprocess '" + cmd + "': " + s.error());
   }
 
+  CHECK_SOME(s->err());
+  Future<string> error = io::read(s->err().get());
+
   return s->status()
     .then(lambda::bind(
         &Docker::_stop,
@@ -1200,6 +1213,7 @@ Future<Nothing> Docker::stop(
         containerName,
         cmd,
         s.get(),
+        error,
         remove))
     .onDiscard(lambda::bind(&commandDiscarded, s.get(), cmd));
 }
@@ -1210,11 +1224,13 @@ Future<Nothing> Docker::_stop(
     const string& containerName,
     const string& cmd,
     const Subprocess& s,
+    Future<string> error,
     bool remove)
 {
   Option<int> status = s.status().get();
 
   if (remove) {
+    error.discard();
     bool force = !status.isSome() || status.get() != 0;
     return docker.rm(containerName, force)
       .repair([=](const Future<Nothing>& future) {
@@ -1224,7 +1240,8 @@ Future<Nothing> Docker::_stop(
       });
   }
 
-  return checkError(cmd, s);
+  // The process has already exited, so we use the underscore version.
+  return _checkError(cmd, s, error);
 }
 
 
@@ -1339,14 +1356,17 @@ void Docker::_inspect(
     };
   }
 
-  // Start reading from stdout so writing to the pipe won't block
+  // Start reading from stdout and stderr so writing to the pipe won't block
   // to handle cases where the output is larger than the pipe
   // capacity.
+  CHECK_SOME(s->out());
+  CHECK_SOME(s->err());
   const Future<string> output = io::read(s->out().get());
+  const Future<string> error = io::read(s->err().get());
 
   s->status()
     .onAny([=]() {
-      __inspect(cmd, promise, retryInterval, output, s.get(), callback);
+      __inspect(cmd, promise, retryInterval, s.get(), output, error, callback);
     });
 }
 
@@ -1355,8 +1375,9 @@ void Docker::__inspect(
     const string& cmd,
     const Owned<Promise<Docker::Container>>& promise,
     const Option<Duration>& retryInterval,
-    Future<string> output,
     const Subprocess& s,
+    Future<string> output,
+    Future<string> error,
     shared_ptr<pair<lambda::function<void()>, mutex>> callback)
 {
   if (promise->future().hasDiscard()) {
@@ -1381,8 +1402,7 @@ void Docker::__inspect(
       return;
     }
 
-    CHECK_SOME(s.err());
-    io::read(s.err().get())
+    error
       .then(lambda::bind(
                 failure<Nothing>,
                 cmd,
@@ -1396,7 +1416,7 @@ void Docker::__inspect(
   }
 
   // Read to EOF.
-  CHECK_SOME(s.out());
+  error.discard();
   output
     .onAny([=](const Future<string>& output) {
       ___inspect(cmd, promise, retryInterval, output, callback);
@@ -1461,10 +1481,20 @@ Future<list<Docker::Container>> Docker::ps(
   // Start reading from stdout so writing to the pipe won't block
   // to handle cases where the output is larger than the pipe
   // capacity.
+  CHECK_SOME(s->out());
+  CHECK_SOME(s->err());
   const Future<string>& output = io::read(s->out().get());
+  const Future<string> error = io::read(s->err().get());
 
   return s->status()
-    .then(lambda::bind(&Docker::_ps, *this, cmd, s.get(), prefix, output));
+    .then(lambda::bind(
+              &Docker::_ps,
+              *this,
+              cmd,
+              s.get(),
+              prefix,
+              output,
+              error));
 }
 
 
@@ -1473,17 +1503,18 @@ Future<list<Docker::Container>> Docker::_ps(
     const string& cmd,
     const Subprocess& s,
     const Option<string>& prefix,
-    Future<string> output)
+    Future<string> output,
+    Future<string> error)
 {
   Option<int> status = s.status().get();
 
   if (!status.isSome()) {
     output.discard();
+    error.discard();
     return Failure("No status found from '" + cmd + "'");
   } else if (status.get() != 0) {
     output.discard();
-    CHECK_SOME(s.err());
-    return io::read(s.err().get())
+    return error
       .then(lambda::bind(
                 failure<list<Docker::Container>>,
                 cmd,
@@ -1492,6 +1523,7 @@ Future<list<Docker::Container>> Docker::_ps(
   }
 
   // Read to EOF.
+  error.discard();
   return output.then(lambda::bind(&Docker::__ps, docker, prefix, lambda::_1));
 }
 
@@ -1632,7 +1664,10 @@ Future<Docker::Image> Docker::pull(
   // Start reading from stdout so writing to the pipe won't block
   // to handle cases where the output is larger than the pipe
   // capacity.
+  CHECK_SOME(s->out());
+  CHECK_SOME(s->err());
   const Future<string> output = io::read(s->out().get());
+  const Future<string> error = io::read(s->err().get());
 
   // We assume docker inspect to exit quickly and do not need to be
   // discarded.
@@ -1646,7 +1681,8 @@ Future<Docker::Image> Docker::pull(
         path,
         socket,
         config,
-        output))
+        output,
+        error))
     .onDiscard(lambda::bind(&commandDiscarded, s.get(), cmd));
 }
 
@@ -1659,16 +1695,18 @@ Future<Docker::Image> Docker::_pull(
     const string& path,
     const string& socket,
     const Option<JSON::Object>& config,
-    Future<string> output)
+    Future<string> output,
+    Future<string> error)
 {
   Option<int> status = s.status().get();
+  error.discard();
+
   if (status.isSome() && status.get() == 0) {
     return output
       .then(lambda::bind(&Docker::____pull, lambda::_1));
   }
 
   output.discard();
-
   return Docker::__pull(docker, directory, image, path, socket, config);
 }
 
@@ -1776,6 +1814,11 @@ Future<Docker::Image> Docker::__pull(
     return Failure("Failed to execute '" + cmd + "': " + s_.error());
   }
 
+  CHECK_SOME(s_->out());
+  CHECK_SOME(s_->err());
+  const Future<string> output = io::read(s_->out().get());
+  const Future<string> error = io::read(s_->err().get());
+
   // Docker pull can run for a long time due to large images, so
   // we allow the future to be discarded and it will kill the pull
   // process.
@@ -1786,7 +1829,9 @@ Future<Docker::Image> Docker::__pull(
         s_.get(),
         cmd,
         directory,
-        image))
+        image,
+        output,
+        error))
     .onDiscard(lambda::bind(&commandDiscarded, s_.get(), cmd))
     .onAny([home]() {
       if (home.isSome()) {
@@ -1807,14 +1852,18 @@ Future<Docker::Image> Docker::___pull(
     const Subprocess& s,
     const string& cmd,
     const string& directory,
-    const string& image)
+    const string& image,
+    Future<string> output,
+    Future<string> error)
 {
   Option<int> status = s.status().get();
+  output.discard();
 
   if (!status.isSome()) {
+    error.discard();
     return Failure("No status found from '" + cmd + "'");
   } else if (status.get() != 0) {
-    return io::read(s.err().get())
+    return error
       .then(lambda::bind(&failure<Image>, cmd, status.get(), lambda::_1));
   }
 
