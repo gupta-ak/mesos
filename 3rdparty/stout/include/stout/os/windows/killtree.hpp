@@ -14,38 +14,52 @@
 #define __STOUT_OS_WINDOWS_KILLTREE_HPP__
 
 #include <stout/os.hpp>
+#include <stout/stringify.hpp>
 #include <stout/try.hpp>
 #include <stout/windows.hpp> // For `SharedHandle` and `pid_t`.
 
 #include <stout/os/windows/jobobject.hpp>
 
+#include <stout/os/kill.hpp> // For `os::kill`
+
+#include <stout/windows/error.hpp> // For `WindowsError`
+
 namespace os {
 
 // Terminate the "process tree" rooted at the specified pid.
 // Since there is no process tree concept on Windows,
-// internally this function looks up the job object for the given pid
-// and terminates the job. This is possible because `name_job`
-// provides an idempotent one-to-one mapping from pid to name.
+// internally this function handles two cases:
+//  - If the process is not in a job object, this function just kills the
+//    process like `os::kill`.
+//  - If the process is in a job object, then we have strong parent-child
+//    a relationship, so we can kill the process tree. This function looks
+//    up the job object for the given pid and terminates the job. This is
+//    possible because `name_job` provides an idempotent one-to-one mapping
+//    from pid to name.
 inline Try<std::list<ProcessTree>> killtree(
     pid_t pid,
     int signal,
     bool groups = false,
     bool sessions = false)
 {
-  const Try<std::wstring> name = os::name_job(pid);
-  if (name.isError()) {
-    return Error("Failed to determine job object name: " + name.error());
+  const Try<bool> in_job = os::is_process_in_job(None(), pid);
+  if (in_job.isError()) {
+    return Error(in_job.error());
   }
 
-  Try<SharedHandle> handle =
-    os::open_job(JOB_OBJECT_TERMINATE, false, name.get());
-  if (handle.isError()) {
-    return Error("Failed to open job object: " + handle.error());
-  }
-
-  Try<Nothing> killJobResult = os::kill_job(handle.get());
-  if (killJobResult.isError()) {
-    return Error("Failed to delete job object: " + killJobResult.error());
+  if (in_job.get()) {
+    const Try<Nothing> result = os::kill_job_from_pid(pid);
+    if (result.isError()) {
+      return Error(result.error());
+    }
+  } else {
+    const int result = os::kill(pid, SIGKILL);
+    if (result != KILL_PASS) {
+      // `os::kill` will call `TerminateProcess` so we can get that error.
+      WindowsError error;
+      return Error(
+          "Failed to kill pid " + stringify(pid) + ": " + error.message);
+    }
   }
 
   // NOTE: This return value is unused. A future refactor

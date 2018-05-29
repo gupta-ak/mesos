@@ -81,6 +81,7 @@ inline Try<SharedHandle> open_job(
   return open_job(desired_access, inherit_handles, name.get());
 }
 
+
 // `create_job` function creates a named job object using `name`.
 inline Try<SharedHandle> create_job(const std::wstring& name)
 {
@@ -390,6 +391,62 @@ inline Try<Nothing> kill_job(SharedHandle job_handle)
   }
 
   return Nothing();
+}
+
+
+// `kill_job_from_pid` kills the job object assigned to process `pid`.
+inline Try<Nothing> kill_job_from_pid(pid_t pid)
+{
+  const Try<std::wstring> name = os::name_job(pid);
+  if (name.isError()) {
+    return Error(name.error());
+  }
+
+  Try<SharedHandle> handle =
+    os::open_job(JOB_OBJECT_TERMINATE, false, name.get());
+  if (handle.isError()) {
+    return Error(handle.error());
+  }
+
+  Try<Nothing> kill_result = os::kill_job(handle.get());
+  if (kill_result.isError()) {
+    return Error(kill_result.error());
+  }
+
+  return Nothing();
+}
+
+
+// `is_process_in_job` wraps the Windows system call `IsProcessInJob`. It checks
+// if the the process `pid` is in the job object `job_handle` or in any job
+// object if `job_handle` is `None`.
+inline Try<bool> is_process_in_job(
+    const Option<SharedHandle>& job_handle, pid_t pid)
+{
+  const SharedHandle process_handle(
+    ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid),
+    ::CloseHandle);
+
+  if (process_handle.get_handle() == nullptr) {
+    return WindowsError();
+  }
+
+  HANDLE raw_job_handle = nullptr;
+  if (job_handle.isSome()) {
+    raw_job_handle = job_handle->get_handle();
+  }
+
+  BOOL in_job;
+  const BOOL result = ::IsProcessInJob(
+    process_handle.get_handle(),
+    raw_job_handle,
+    &in_job);
+
+  if (result == FALSE) {
+    return WindowsError();
+  }
+
+  return in_job;
 }
 
 } // namespace os {
