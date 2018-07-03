@@ -28,6 +28,7 @@
 
 #include <stout/duration.hpp>
 #include <stout/option.hpp>
+#include <stout/os.hpp>
 #include <stout/gtest.hpp>
 
 #include <stout/os/constants.hpp>
@@ -397,32 +398,62 @@ TEST_F(DockerTest, ROOT_DOCKER_kill)
 // This test tests parsing docker version output.
 TEST_F(DockerTest, ROOT_DOCKER_Version)
 {
+  Try<string> directory = environment->mkdtemp();
+  ASSERT_SOME(directory);
+
+#ifdef __WINDOWS__
+  const string testDockerPath = path::join(directory.get(), "test-docker.bat");
+#else
+  const string testDockerPath = path::join(directory.get(), "test-docker.sh");
+#endif // __WINDOWS__
+
+  auto makeDockerScript = [testDockerPath](const string& cmd) {
+#ifdef __WINDOWS__
+    const string script = cmd + "\r\n";
+#else
+    const string script = "#!/usr/bin/env sh\n" + cmd + "\n";
+#endif // __WINDOWS__
+
+    ASSERT_SOME(os::write(testDockerPath, script));
+
+#ifndef __WINDOWS__
+    Try<Nothing> chmod = os::chmod(
+        testDockerPath, S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
+    ASSERT_SOME(chmod);
+#endif // __WINDOWS__
+  };
+
+  makeDockerScript("echo Docker version 1.7.1, build");
   Try<Owned<Docker>> docker = Docker::create(
-      "echo Docker version 1.7.1, build",
+      testDockerPath,
+      tests::flags.docker_socket,
+      false);
+  ASSERT_SOME(docker);
+
+
+  AWAIT_EXPECT_EQ(Version(1, 7, 1), docker.get()->version());
+
+  makeDockerScript("echo Docker version 1.7.1.fc22, build");
+  docker = Docker::create(
+      testDockerPath,
       tests::flags.docker_socket,
       false);
   ASSERT_SOME(docker);
 
   AWAIT_EXPECT_EQ(Version(1, 7, 1), docker.get()->version());
 
+  makeDockerScript("echo Docker version 1.7.1-fc22, build");
   docker = Docker::create(
-      "echo Docker version 1.7.1.fc22, build",
-      tests::flags.docker_socket,
-      false);
-  ASSERT_SOME(docker);
-
-  AWAIT_EXPECT_EQ(Version(1, 7, 1), docker.get()->version());
-
-  docker = Docker::create(
-      "echo Docker version 1.7.1-fc22, build",
+      testDockerPath,
       tests::flags.docker_socket,
       false);
   ASSERT_SOME(docker);
 
   AWAIT_EXPECT_EQ(Version(1, 7, 1, {"fc22"}), docker.get()->version());
 
+  makeDockerScript("echo Docker version 17.05.0-ce, build 89658bed64");
   docker = Docker::create(
-      "echo Docker version 17.05.0-ce, build 89658bed64",
+      testDockerPath,
       tests::flags.docker_socket,
       false);
   ASSERT_SOME(docker);
